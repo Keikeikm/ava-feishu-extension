@@ -1,0 +1,15 @@
+services:
+  bot:
+    build:
+      context: ../..
+      dockerfile: apps/bot/Dockerfile
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - bot-data:/app/data
+
+volumes:
+  bot-data:

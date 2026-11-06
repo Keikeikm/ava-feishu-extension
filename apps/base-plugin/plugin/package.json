@@ -1,0 +1,10 @@
+{
+  "name": "ava-feishu-table-view",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node ../scripts/check-plugin-config.mjs && webpack serve --mode development",
+    "build": "webpack --mode production",
+    "upload": "node ../scripts/check-plugin-config.mjs --publish && npm run build && opdev upload ./dist"
+  }
+}

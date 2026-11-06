@@ -1,0 +1,2 @@
+# Preserve the upstream CSV fixture's CRLF records.
+apps/bot/examples/titanic.csv -text whitespace=cr-at-eol

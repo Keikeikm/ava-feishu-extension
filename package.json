@@ -1,0 +1,25 @@
+{
+  "name": "ava-feishu-extension",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0 <23",
+    "npm": ">=10"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:core": "npm run build -w @ava/analysis-core",
+    "build:bot": "npm run build:core && npm run build -w @ava/bot",
+    "build:plugin": "npm run build:core && npm run build -w @ava/base-plugin",
+    "build": "npm run build:core && npm run build -w @ava/bot -w @ava/base-plugin",
+    "check": "npm run build:core && npm run check -w @ava/bot && npm run typecheck -w @ava/base-plugin",
+    "test": "npm run build:core && npm run test -w @ava/analysis-core -w @ava/bot -w @ava/base-plugin",
+    "test:e2e": "npm run build:core && npm run test:e2e -w @ava/base-plugin --",
+    "dev:bot": "npm run build:core && npm run dev -w @ava/bot",
+    "dev:plugin": "npm run build:core && npm run dev -w @ava/base-plugin",
+    "dev:preview": "npm run build:core && npm run dev:preview -w @ava/base-plugin"
+  }
+}
