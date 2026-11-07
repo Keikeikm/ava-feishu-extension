@@ -11,6 +11,7 @@
     "packages/*"
   ],
   "scripts": {
+    "prebuild:core": "node scripts/check-node.cjs",
     "build:core": "npm run build -w @ava/analysis-core",
     "build:bot": "npm run build:core && npm run build -w @ava/bot",
     "build:plugin": "npm run build:core && npm run build -w @ava/base-plugin",
@@ -20,6 +21,8 @@
     "test:e2e": "npm run build:core && npm run test:e2e -w @ava/base-plugin --",
     "dev:bot": "npm run build:core && npm run dev -w @ava/bot",
     "dev:plugin": "npm run build:core && npm run dev -w @ava/base-plugin",
+    "predoctor:plugin": "node scripts/check-node.cjs",
+    "doctor:plugin": "npm run doctor -w @ava/base-plugin --",
     "dev:preview": "npm run build:core && npm run dev:preview -w @ava/base-plugin"
   }
 }

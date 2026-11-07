@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   ArrowDownToLine,
@@ -37,7 +37,7 @@ import {
 } from '../shared/types';
 import { connectFeishu, listViews, loadFeishu, readViewConfig, saveViewConfig } from './lib/feishu';
 import { download, exportReport, toCsv } from './lib/export';
-import { apiOrigin, apiUrl } from './lib/api';
+import { apiOrigin, apiUrl, automaticConnection, fetchServerStatus } from './lib/api';
 import { DataTable } from './components/DataTable';
 import { RelatedSource } from './components/RelatedSource';
 const Chart = lazy(() =>
@@ -83,6 +83,8 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const [primaryKey, setPrimaryKey] = useState('');
   const [relatedKey, setRelatedKey] = useState('');
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState('');
   const [page, setPage] = useState<'analysis' | 'data'>('analysis');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [question, setQuestion] = useState('');
@@ -111,23 +113,41 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const primaryKeyField = fields.find((f) => f.id === primaryKey);
   const relatedKeyField = relatedFields.find((f) => f.id === relatedKey);
 
-  useEffect(() => {
-    fetch(apiUrl('/api/status'))
-      .then((r) => {
-        if (!r.ok) throw new Error();
-        return r.json();
-      })
-      .then(setStatus)
-      .catch(() =>
-        setError(
-          (previous) => previous || '分析服务未连接，请检查服务地址、域名白名单和服务器跨域配置。',
-        ),
+  const refreshStatus = useCallback(async (accessToken = '', signal?: AbortSignal) => {
+    setStatusLoading(true);
+    try {
+      const next = await fetchServerStatus(accessToken, signal);
+      if (signal?.aborted) return null;
+      setStatus(next);
+      setStatusError('');
+      return next;
+    } catch (failure) {
+      if (signal?.aborted) return null;
+      setStatus(null);
+      setStatusError(
+        failure instanceof TypeError
+          ? '无法连接分析服务，请确认本次调试已启动，并刷新整个飞书页面。'
+          : failure instanceof Error
+            ? failure.message
+            : '分析服务连接失败。',
       );
+      return null;
+    } finally {
+      if (!signal?.aborted) setStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshStatus('', controller.signal);
+    const timer = setInterval(() => void refreshStatus('', controller.signal), 15_000);
     return () => {
+      clearInterval(timer);
+      controller.abort();
       request.current?.abort();
       sourceRequest.current++;
     };
-  }, []);
+  }, [refreshStatus]);
   useEffect(() => {
     if (preview) return;
     const version = ++sourceRequest.current;
@@ -293,7 +313,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
       setError('分析服务尚未就绪，请检查连接设置。');
       return;
     }
-    if (!preview && status?.authRequired && !token.trim()) {
+    if (!automaticConnection && !preview && status?.authRequired && !token.trim()) {
       setDialog('settings');
       return;
     }
@@ -329,7 +349,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(!automaticConnection && token ? { Authorization: `Bearer ${token.trim()}` } : {}),
         },
         body: JSON.stringify({
           question: query.trim(),
@@ -679,11 +699,24 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 </div>
               )}
 
-              {!preview && status?.ready && status.authRequired && !token.trim() && (
-                <div className="notice">
+              {!automaticConnection &&
+                !preview &&
+                status?.ready &&
+                status.authRequired &&
+                !token.trim() && (
+                  <div className="notice">
+                    <Settings2 size={16} />
+                    填写服务访问令牌后即可提问。
+                    <button onClick={() => setDialog('settings')}>连接设置</button>
+                  </div>
+                )}
+              {statusError && (
+                <div className="notice" role="status">
                   <Settings2 size={16} />
-                  填写服务访问令牌后即可提问。
-                  <button onClick={() => setDialog('settings')}>连接设置</button>
+                  {statusError}
+                  <button onClick={() => void refreshStatus(token)} disabled={statusLoading}>
+                    重新检查连接
+                  </button>
                 </div>
               )}
               {error && (
@@ -1331,46 +1364,79 @@ export default function App({ preview = false }: { preview?: boolean }) {
               <>
                 <p className="modal-intro">
                   分析服务：{apiOrigin || '当前预览页面的同源服务'}
-                  。飞书插件由平台托管，须在开放平台配置此服务的域名白名单，并在服务端允许插件的实际
-                  origin。
+                  {automaticConnection
+                    ? '。本地调试连接由启动脚本自动管理。'
+                    : '。正式插件请使用已部署的 HTTPS 分析服务，并配置插件 origin 白名单。'}
                 </p>
                 <div className="model-status">
                   <span className={`status-light ${status?.ready ? 'ready' : ''}`} />
                   <div>
                     <strong>
-                      {status?.ready ? '模型已配置' : preview ? '预览演示模式' : '尚未配置模型'}
+                      {status
+                        ? status.ready
+                          ? '模型已配置'
+                          : preview
+                            ? '预览演示模式'
+                            : '尚未配置模型'
+                        : statusLoading
+                          ? '正在检查分析服务…'
+                          : '分析服务未连接'}
                     </strong>
-                    <p>{status?.model || '自由提问需要由维护者配置分析服务'}</p>
+                    <p>
+                      {statusError ||
+                        status?.model ||
+                        (status ? '自由提问需要配置服务端模型' : '等待分析服务响应')}
+                    </p>
                   </div>
                 </div>
-                <p className="modal-intro">
-                  模型密钥由服务端管理。维护者在服务器的 .env 中配置以下变量，并重启服务：
-                </p>
-                <pre className="sql-block">
-                  AVA_API_KEY=你的模型密钥{'\n'}AVA_MODEL=模型名称{'\n'}
-                  AVA_BASE_URL=兼容接口地址（可选）
-                </pre>
-                <label className="token-label">
-                  服务访问令牌 {status?.authRequired && <span>此服务需要令牌</span>}
-                  <input
-                    type="password"
-                    value={token}
-                    placeholder="由服务维护者提供；仅保存在本次会话"
-                    onChange={(e) => setToken(e.target.value)}
-                    autoComplete="off"
-                  />
-                </label>
+                {status && !status.ready && (
+                  <>
+                    <p className="modal-intro">
+                      当前服务未加载完整模型配置。请核对 apps/base-plugin/.env，并重启本次调试服务：
+                    </p>
+                    <pre className="sql-block">
+                      AVA_API_KEY=你的模型密钥{'\n'}AVA_MODEL=模型名称{'\n'}
+                      AVA_BASE_URL=兼容接口地址（可选）
+                    </pre>
+                  </>
+                )}
+                {automaticConnection ? (
+                  <p className="modal-note">
+                    本地认证自动完成，无需生成或填写服务访问令牌。模型密钥保留在服务端。
+                  </p>
+                ) : (
+                  <label className="token-label">
+                    服务访问令牌 {status?.authRequired && <span>此服务需要令牌</span>}
+                    <input
+                      type="password"
+                      value={token}
+                      placeholder="由服务维护者提供；仅保存在本次会话"
+                      onChange={(e) => setToken(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                )}
                 <p className="modal-note">
-                  所选数据发送至当前分析服务；模型端点可能接收统计信息与查询结果。请按组织的数据管理要求选择字段。
+                  所选数据发送至当前分析服务；模型端点可能接收统计信息与查询结果。
                 </p>
                 <button
+                  className="button secondary full-width"
+                  disabled={statusLoading}
+                  onClick={() => void refreshStatus(token)}
+                >
+                  {statusLoading ? '正在检查连接…' : '重新检查连接'}
+                </button>
+                <button
                   className="button primary full-width"
-                  onClick={() => {
-                    setDialog(null);
-                    setToast('连接设置已应用');
+                  disabled={statusLoading}
+                  onClick={async () => {
+                    if (await refreshStatus(token)) {
+                      setDialog(null);
+                      setToast('连接检查通过');
+                    }
                   }}
                 >
-                  应用设置
+                  {automaticConnection ? '完成' : '应用设置'}
                 </button>
               </>
             ) : (

@@ -74,6 +74,15 @@ export function createApp(
     }
     next();
   });
+  // A cheap authenticated check for connecting the UI; no model requests or table data.
+  app.get('/api/connection', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ready: !!options.model,
+      model: options.model?.model ?? null,
+      authRequired: !!options.token,
+    });
+  });
   app.use(
     '/api',
     rateLimit({

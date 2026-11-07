@@ -6,11 +6,22 @@ const {
   opdevMiddleware,
 } = require('@lark-opdev/block-bitable-webpack-utils');
 const runtime = require('./runtime.config.json');
+const developmentProxy = require('../scripts/dev-proxy.cjs');
 
 module.exports = (_env, argv) => {
   // The official plugin checks NODE_ENV to emit the opdev deployment manifests.
   process.env.NODE_ENV = argv.mode || 'production';
   const debugPort = Number(process.env.FEISHU_DEBUG_PORT ?? 8080);
+  const managed = argv.mode === 'development' && process.env.AVA_DEV_PROXY === '1';
+  const localProxy = managed
+    ? developmentProxy(process.env.AVA_DEV_API_ORIGIN, process.env.PLUGIN_ACCESS_TOKEN, debugPort)
+    : null;
+  const apiOrigin =
+    argv.mode === 'development'
+      ? managed
+        ? `http://localhost:${debugPort}`
+        : process.env.AVA_DEV_API_ORIGIN || runtime.apiOrigin
+      : runtime.apiOrigin;
   let debugBaseUrl = '';
   if (argv.mode === 'development') {
     const tableUrl = new URL(require('./block.json').url);
@@ -45,17 +56,21 @@ module.exports = (_env, argv) => {
     plugins: [
       new HtmlWebpackPlugin({ template: path.resolve(__dirname, 'index.html') }),
       new webpack.DefinePlugin({
-        __AVA_API_ORIGIN__: JSON.stringify(runtime.apiOrigin),
+        __AVA_API_ORIGIN__: JSON.stringify(apiOrigin),
+        __AVA_MANAGED_CONNECTION__: JSON.stringify(managed),
         __FEISHU_DEBUG_BASE_URL__: JSON.stringify(debugBaseUrl),
       }),
-      new BitableAppWebpackPlugin({ open: true }),
+      new BitableAppWebpackPlugin({ open: process.env.AVA_DEV_OPEN !== '0' }),
     ],
     devServer: {
       host: 'localhost',
       port: debugPort,
       hot: true,
       client: { overlay: true },
+      ...(localProxy ? { proxy: [localProxy.proxy] } : {}),
       setupMiddlewares(middlewares, devServer) {
+        if (localProxy)
+          middlewares.unshift({ name: 'ava-local-api-guard', middleware: localProxy.guard });
         middlewares.push(opdevMiddleware(devServer));
         return middlewares;
       },

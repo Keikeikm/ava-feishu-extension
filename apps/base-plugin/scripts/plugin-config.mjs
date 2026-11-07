@@ -39,7 +39,7 @@ export function validateConfig({ app, block, runtime }, publish = false) {
   } catch {
     errors.push(
       publish
-        ? '上传需要已部署的 HTTPS 分析服务地址（不带 /api、路径或密钥）。仅更新地址可运行 npm run plugin:configure -- --api-origin https://ava.example.com，并替换成你的真实地址。'
+        ? '上传需要已部署的 HTTPS 分析服务地址（不带 /api、路径或密钥）。仅更新地址可在仓库根目录运行 npm run plugin:configure -w @ava/base-plugin -- --api-origin https://ava.example.com，并替换成你的真实地址。'
         : '分析服务地址须为 HTTP(S) origin（不带 /api、路径或密钥）',
     );
   }
@@ -66,7 +66,9 @@ export async function configureConfig(args) {
       ['plugin/runtime.config.json', config.runtime],
     ].map(([name, value]) => writeFile(new URL(name, root), JSON.stringify(value, null, 2) + '\n')),
   );
-  console.log('已写入插件绑定配置。下一步运行 npx opdev login，然后 npm run dev。');
+  console.log(
+    '已写入插件绑定配置。下一步在仓库根目录运行 npm exec -w @ava/base-plugin -- opdev login，然后运行 npm run dev:plugin。',
+  );
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   configureConfig(process.argv.slice(2)).catch((error) => {

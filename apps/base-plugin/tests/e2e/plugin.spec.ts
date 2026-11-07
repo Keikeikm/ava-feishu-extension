@@ -150,3 +150,22 @@ test('飞书 SDK 夹具：关联两张表，只提交选定视图的已勾选字
   });
   await expect(plugin.getByText(/关联键匹配：1 \/ 1 条主表记录/)).toBeVisible();
 });
+
+test('连接失败不会误报未配置模型，可一键重新检查', async ({ page }) => {
+  let attempts = 0;
+  await page.route('**/api/status', (route) => {
+    attempts++;
+    return attempts === 1
+      ? route.abort('failed')
+      : route.fulfill({
+          json: { ready: true, model: 'connection-fixture', authRequired: false },
+        });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '连接设置', exact: true }).click();
+  await expect(page.getByText('分析服务未连接', { exact: true })).toBeVisible();
+  await expect(page.getByText('尚未配置模型', { exact: true })).toHaveCount(0);
+  await page.getByRole('dialog').getByRole('button', { name: '重新检查连接' }).click();
+  await expect(page.getByText('模型已配置', { exact: true })).toBeVisible();
+  await expect(page.getByText('connection-fixture', { exact: true })).toBeVisible();
+});

@@ -7,21 +7,26 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "concurrently -k \"npm run dev:server\" \"npm --prefix plugin start\"",
+    "predev": "node ../../scripts/check-node.cjs",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
     "build": "tsc --noEmit && npm run build:plugin && npm run build:preview",
+    "prestart": "node ../../scripts/check-node.cjs",
     "start": "tsx --env-file-if-exists=.env server/index.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "check": "npm run build && npm test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "predev:preview": "node ../../scripts/check-node.cjs",
     "dev:preview": "concurrently -k \"tsx watch --env-file-if-exists=.env server/index.ts\" \"vite --host 127.0.0.1\"",
+    "predev:server": "node ../../scripts/check-node.cjs",
     "dev:server": "tsx watch --env-file-if-exists=.env server/index.ts",
     "plugin:configure": "node scripts/plugin-config.mjs",
     "build:plugin": "npm --prefix plugin run build",
     "build:preview": "vite build",
     "plugin:upload": "npm --prefix plugin run upload",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "doctor": "tsx --env-file-if-exists=.env scripts/doctor.mjs"
   },
   "dependencies": {
     "@ava/analysis-core": "0.1.0",

@@ -2,6 +2,7 @@
 FROM node:22-bookworm-slim AS manifests
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY scripts/check-node.cjs ./scripts/check-node.cjs
 COPY apps/bot/package.json ./apps/bot/
 COPY apps/base-plugin/package.json ./apps/base-plugin/
 COPY packages/analysis-core/package.json ./packages/analysis-core/

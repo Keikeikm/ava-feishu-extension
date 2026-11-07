@@ -18,14 +18,14 @@ cp apps/base-plugin/.env.example apps/base-plugin/.env
 
 编辑 `apps/base-plugin/.env`：
 
-| 变量                       | 填写内容                                                             |
-| -------------------------- | -------------------------------------------------------------------- |
-| `AVA_API_KEY`、`AVA_MODEL` | 模型密钥与名称，自由提问必填                                         |
-| `AVA_BASE_URL`             | 可选的 OpenAI 兼容接口地址，不含 `/chat/completions`                 |
-| `PLUGIN_ACCESS_TOKEN`      | 自行设置的服务令牌，飞书跨域访问和对外监听时必填                     |
-| `PLUGIN_ALLOWED_ORIGINS`   | 插件 **frame 的实际 origin**，多个值用逗号分隔；本地默认含 8080 端口 |
+| 变量                       | 填写内容                                                 |
+| -------------------------- | -------------------------------------------------------- |
+| `AVA_API_KEY`、`AVA_MODEL` | 模型密钥与名称，自由提问必填                             |
+| `AVA_BASE_URL`             | 可选的 OpenAI 兼容接口地址，不含 `/chat/completions`     |
+| `PLUGIN_ACCESS_TOKEN`      | 正式部署时的服务令牌；本地调试由脚本自动生成和管理       |
+| `PLUGIN_ALLOWED_ORIGINS`   | 正式部署时填写插件 frame 的实际 origin；本地调试自动配置 |
 
-模型密钥留在服务端；用户只需在插件右上角「连接设置」填写服务令牌。
+本地只需填写模型配置，无需手动生成或在插件中粘贴令牌。模型密钥与调试凭证都保留在服务端。正式部署仍需配置服务令牌或接入组织身份认证。
 
 ## 2. 绑定飞书并调试
 
@@ -42,7 +42,18 @@ npm exec -w @ava/base-plugin -- opdev login
 npm run dev:plugin
 ```
 
-绑定信息写入本模块的 `app.json`、`plugin/block.json` 和 `plugin/runtime.config.json`。调试服务默认使用 **8080** 端口，分析 API 使用 **3001**。在打开的测试表中，通过「＋ → 更多插件」添加本地 AVA 视图。
+绑定信息写入本模块的 `app.json`、`plugin/block.json` 和 `plugin/runtime.config.json`。在打开的测试表中，通过「＋ → 更多插件」添加本地 AVA 视图。
+
+启动时从 **8080**（调试服务）和 **3001**（分析 API）开始自动寻找空闲端口，同步设置调试链接、API 地址和来源白名单，并打印实际地址。`FEISHU_DEBUG_PORT` 和 `PORT` 可指定查找的起始端口。本地开发不会改写生产配置；端口变化后刷新整个飞书页面，再打开插件视图。
+
+遇到连接问题，在另一个终端运行诊断。它会检查飞书插件注册、App ID / BlockTypeID、视图入口和自动认证；加 `--model` 会用三条内置数字数据检查真实模型和 SQL 流程：
+
+```sh
+npm run doctor:plugin
+npm run doctor:plugin -- --model
+```
+
+页面会区分「服务未连接」和「未配置模型」，支持重新检查，并自动重试连接。
 
 ## 3. 选择数据并提问
 

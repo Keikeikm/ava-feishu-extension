@@ -8,3 +8,4 @@
 **/output
 **/playwright-report
 **/test-results
+**/.dev

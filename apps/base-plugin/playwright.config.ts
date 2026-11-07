@@ -13,6 +13,14 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm run dev:preview',
+    // Browser regression tests must not use a developer's real model or credentials.
+    env: {
+      HOST: '127.0.0.1',
+      AVA_API_KEY: '',
+      AVA_MODEL: '',
+      AVA_BASE_URL: '',
+      PLUGIN_ACCESS_TOKEN: '',
+    },
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
