@@ -1,57 +1,59 @@
 # AVA 飞书扩展
 
-飞书多维表格视图插件与聊天机器人共用一个 npm workspaces 仓库。两个应用可以独立构建和部署。
+**在表格视图里提问，也能在聊天中分析数据。**
 
-| 目录 | 职责 |
-| --- | --- |
-| [apps/base-plugin](apps/base-plugin/README.md) | 飞书数据表视图、视图 SDK 读表、浏览器预览和独立分析 API |
-| [apps/bot](apps/bot/README.md) | 飞书消息、文件与 Base 读取、会话、训练和回复 |
-| [packages/analysis-core](packages/analysis-core/src/index.ts) | AVA 初始化、分析约束、结果和图表类型、具名快照装载及关联键检查 |
+飞书插件与机器人共享 AntV AVA 4 + DuckDB 分析核心，支持中文结论、图表和结果导出，可分别构建、部署。
 
-插件按请求创建引擎并清理临时快照。机器人在自己的 worker 中保留数据和追问上下文。飞书权限、凭证和读表方式由应用各自管理；共享核心接收已经获准读取的数据。
+![独立预览：选取数据并用自然语言提问](apps/base-plugin/docs/workspace.png)
 
-## 开发
+_图为使用虚构销售数据的独立预览页面。_
 
-需要 Node.js 22.13+（22.x）和 npm 10+。在仓库根目录运行：
+## 先体验
+
+需要 **Node.js 22.13+（22.x）和 npm 10+**。本文及子目录指南中的命令均在**仓库根目录**执行。
 
 ```sh
 nvm use
 npm ci
-npm run check
-npm run build
-npm test
+npm run dev:preview
+```
+
+打开 [localhost:5173](http://127.0.0.1:5173)，无需密钥即可体验 4 个演示问题。接入真实飞书数据或自由提问，按下面的应用指南配置。
+
+## 选择入口
+
+| 模块                     | 适合做什么                                         | 指南                                             |
+| ------------------------ | -------------------------------------------------- | ------------------------------------------------ |
+| `apps/base-plugin`       | 在多维表格视图中选择表、视图和字段，查看图表与 SQL | [插件配置与发布](apps/base-plugin/README.md)     |
+| `apps/bot`               | 发送文件或 Base 链接，在聊天中分析和追问           | [机器人配置与运行](apps/bot/README.md)           |
+| `packages/analysis-core` | 复用 AVA 调用、结果类型、多表装载及关联键检查      | [共享核心开发](packages/analysis-core/README.md) |
+
+```mermaid
+flowchart LR
+    SDK["飞书视图 SDK"] --> Plugin["视图插件 / 分析 API"]
+    Messages["消息、文件、Base 链接"] --> Bot["机器人 / 会话"]
+    Plugin --> Core["analysis-core · AVA + DuckDB"]
+    Bot --> Core
+    Core --> Result["结论 · 计算结果 · 图表"]
+```
+
+两个应用各自管理飞书权限和读表方式。插件按请求分析；机器人保留会话与追问上下文。所选模型服务会接收问题、数据结构及查询结果。
+
+## 开发与验证
+
+```sh
+npm run check     # 类型检查
+npm run build     # 构建共享核心和两个应用
+npm test          # 单元与集成测试
+```
+
+浏览器测试在构建后运行：
+
+```sh
+npm exec -w @ava/base-plugin -- playwright install chromium
 npm run test:e2e
 ```
 
-首次运行浏览器测试前，执行 `npm exec -w @ava/base-plugin -- playwright install chromium`。浏览器测试默认使用本机 3001 和 5173 端口；如有占用，可用 `PORT=13001 AVA_PREVIEW_PORT=15173 npm run test:e2e`。要运行机器人的训练测试，在 `apps/bot` 下创建 `.venv` 并安装 `ml/requirements.txt`，或将 `ML_PYTHON` 指向已装依赖的 Python。其他测试不需要飞书或模型密钥。
+端口占用时可用 `PORT=13001 AVA_PREVIEW_PORT=15173 npm run test:e2e`。训练测试需要额外的 Python 依赖，见[机器人指南](apps/bot/README.md#可选本地训练)。
 
-- **插件预览**：运行 `npm run dev:preview`，打开 [本机预览](http://127.0.0.1:5173)。无模型时可用内置演示数据。
-- **飞书视图**：将 `apps/base-plugin/.env.example` 复制为同目录的 `.env`。按[插件指南](apps/base-plugin/README.md)设置 `AVA_*`、绑定 App ID、BlockTypeID 和测试表，随后在根目录运行 `npm run dev:plugin`。
-- **机器人**：将 `apps/bot/.env.example` 复制为同目录的 `.env`，填写 `FEISHU_*` 和 `LLM_*`，随后在根目录运行 `npm run dev:bot`。权限和事件配置见[机器人指南](apps/bot/README.md)。
-
-## 独立构建与部署
-
-在仓库根目录执行相应命令：
-
-| 目标 | 构建 | 启动或发布 |
-| --- | --- | --- |
-| 机器人 | `npm run build:bot` | `npm start -w @ava/bot` |
-| 插件分析 API 与独立预览 | `npm run build:plugin` | `npm start -w @ava/base-plugin` |
-| 飞书数据表视图包 | `npm run build:plugin` | 产物在 `apps/base-plugin/plugin/dist`；完成飞书绑定后运行 `npm run plugin:upload -w @ava/base-plugin` |
-
-Docker 构建上下文为仓库根目录，两个镜像分别安装所需的 workspace 依赖：
-
-```sh
-docker compose -f apps/bot/compose.yaml up -d --build
-docker build -f apps/base-plugin/Dockerfile -t ava-base-plugin .
-docker run --rm --env-file apps/base-plugin/.env -e HOST=0.0.0.0 -p 3001:3001 ava-base-plugin
-```
-
-容器中的插件 API 对外监听时必须配置 `PLUGIN_ACCESS_TOKEN`；飞书托管的视图还需要生产 API 地址和 origin 白名单。上传视图包与部署 API 是独立步骤。
-
-## 迁移来源
-
-- 机器人：[ava-feishu-bot @ 6b65984](https://github.com/Keikeikm/ava-feishu-bot/commit/6b65984bf89a47b28dfe580212642f7bcace691a)
-- 插件：[ava-feishu-plugin @ 7415bfb](https://github.com/Keikeikm/ava-feishu-plugin/commit/7415bfb91260053143e93bb73f1c677e04d8fa84)
-
-初始导入使用这两个 GitHub 默认分支的已提交快照，原始提交历史保留在各自仓库。两个应用的环境文件和运行数据不随代码迁移。
+迁移基线：[机器人 6b65984](https://github.com/Keikeikm/ava-feishu-bot/commit/6b65984bf89a47b28dfe580212642f7bcace691a) · [插件 7415bfb](https://github.com/Keikeikm/ava-feishu-plugin/commit/7415bfb91260053143e93bb73f1c677e04d8fa84)。
