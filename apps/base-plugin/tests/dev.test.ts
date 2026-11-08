@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
@@ -169,6 +170,27 @@ it('本地代理自动认证，拒绝外站和无来源的写请求，API 本身
     .send({ question: DEMO_QUESTIONS[0], snapshot: demoSnapshot, mode: 'demo' });
   expect(analyzed.status).toBe(200);
   expect(analyzed.body.data).toHaveLength(6);
+  const id = randomUUID(),
+    key = randomUUID();
+  const started = await request(gateway)
+    .post('/api/analysis-jobs')
+    .set('Host', 'localhost:18081')
+    .set('Origin', 'http://localhost:18081')
+    .send({
+      id,
+      key,
+      payload: { question: DEMO_QUESTIONS[0], snapshot: demoSnapshot, mode: 'demo' },
+    });
+  expect(started.status).toBe(202);
+  await vi.waitFor(async () => {
+    const polled = await request(gateway)
+      .get(`/api/analysis-jobs/${id}`)
+      .set('Host', 'localhost:18081')
+      .set('Origin', 'http://localhost:18081')
+      .set('X-AVA-Job-Key', key);
+    expect(polled.body.status).toBe('succeeded');
+    expect(polled.body.result.data).toHaveLength(6);
+  });
   for (const origin of ['https://untrusted.example', 'null']) {
     const blocked = await request(gateway)
       .post('/api/analyze')

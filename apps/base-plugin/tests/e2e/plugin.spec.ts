@@ -95,10 +95,10 @@ test('飞书 SDK 夹具：关联两张表，只提交选定视图的已勾选字
       export const bitable = {
         base: {
           getTableMetaList: async () => [{ id: 'orders', name: '订单' }, { id: 'customers', name: '客户' }],
-          getSelection: async () => ({ tableId: 'orders' }),
+          getSelection: async () => ({ tableId: 'orders', baseId: 'base-fixture', viewId: 'plugin-fixture' }),
           getTableById: async (id) => id === 'orders' ? orders : customers,
         },
-        bridge: { getData: async () => null },
+        bridge: { getData: async () => null, getUserId: async () => 'fixture-user' },
       };
     `,
     }),
@@ -108,23 +108,27 @@ test('飞书 SDK 夹具：关联两张表，只提交选定视图的已勾选字
       json: { ready: true, model: 'fixture', authRequired: false },
     }),
   );
-  await page.route('**/api/analyze', (route) =>
+  await page.route('**/api/analysis-jobs', (route) =>
     route.fulfill({
       json: {
-        id: 'result',
-        query: '统计订单',
-        text: '共一条订单。',
-        data: [{ count: 1 }],
-        chart: null,
-        rowCount: 1,
-        elapsedMs: 1,
-        mode: 'live',
-        createdAt: '2026-01-01T00:00:00Z',
-        joinQuality: {
-          matchedRows: 1,
-          primaryRows: 1,
-          primaryMissingKeys: 0,
-          relatedMissingKeys: 0,
+        id: route.request().postDataJSON().id,
+        status: 'succeeded',
+        result: {
+          id: 'result',
+          query: '统计订单',
+          text: '共一条订单。',
+          data: [{ count: 1 }],
+          chart: null,
+          rowCount: 1,
+          elapsedMs: 1,
+          mode: 'live',
+          createdAt: '2026-01-01T00:00:00Z',
+          joinQuality: {
+            matchedRows: 1,
+            primaryRows: 1,
+            primaryMissingKeys: 0,
+            relatedMissingKeys: 0,
+          },
         },
       },
     }),
@@ -141,9 +145,9 @@ test('飞书 SDK 夹具：关联两张表，只提交选定视图的已勾选字
   await plugin.getByRole('combobox', { name: '关联表唯一键' }).selectOption('id');
   await plugin.getByRole('button', { name: '完成选择' }).click();
   await plugin.getByRole('textbox', { name: '分析问题' }).fill('统计订单');
-  const submitted = page.waitForRequest('**/api/analyze');
+  const submitted = page.waitForRequest('**/api/analysis-jobs');
   await plugin.getByRole('button', { name: '开始分析' }).click();
-  expect((await submitted).postDataJSON().related).toMatchObject({
+  expect((await submitted).postDataJSON().payload.related).toMatchObject({
     primaryFieldId: 'customer',
     relatedFieldId: 'id',
     snapshot: { tableId: 'customers', viewId: 'filtered', rows: [{ 编号: '001' }] },

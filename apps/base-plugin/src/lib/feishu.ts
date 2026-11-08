@@ -1,6 +1,7 @@
 import type { Snapshot } from '../../shared/types';
 import { MAX_FIELDS, MAX_ROWS } from '../../shared/types';
 import { fieldKind, normalizeCell } from './normalize';
+import type { ConversationScope } from './conversations';
 
 const sdk = () => import('@lark-opdev/block-bitable-api');
 
@@ -10,11 +11,16 @@ export async function connectFeishu() {
       '请在飞书多维表格的“新建视图 → 更多插件”中打开已安装的数据表视图插件。独立网页无法读取飞书上下文。',
     );
   const { bitable } = await sdk();
-  const [tables, selection] = await Promise.all([
+  const [tables, selection, userId] = await Promise.all([
     bitable.base.getTableMetaList(),
     bitable.base.getSelection(),
+    bitable.bridge.getUserId().catch(() => ''),
   ]);
-  return { tables, tableId: selection.tableId ?? tables[0]?.id };
+  const scope: ConversationScope | null =
+    userId && selection.baseId
+      ? { userId, baseId: selection.baseId, viewId: selection.viewId ?? 'default' }
+      : null;
+  return { tables, tableId: selection.tableId ?? tables[0]?.id, scope };
 }
 
 export async function listViews(tableId: string) {

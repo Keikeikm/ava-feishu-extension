@@ -3,8 +3,15 @@ import rateLimit from 'express-rate-limit';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { analysisRequest } from './validation';
+import { analysisRequest, analysisJobRequest } from './validation';
 import { JoinSelectionError, runAnalysis, type ModelConfig } from './analysis';
+import { AnalysisJobs } from './analysis-jobs';
+
+const analysisFailure = (error: unknown) =>
+  error instanceof JoinSelectionError ||
+  (error instanceof Error && error.message.startsWith('演示模式支持'))
+    ? error.message
+    : '分析未完成，请检查模型配置与网络连接，或换一种提问方式。';
 
 export function createApp(
   options: {
@@ -15,6 +22,8 @@ export function createApp(
   } = {},
 ) {
   const app = express();
+  const jobs = new AnalysisJobs();
+  let active = 0;
   app.disable('x-powered-by');
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
@@ -28,7 +37,7 @@ export function createApp(
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.vary('Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-AVA-Job-Key');
       if (req.method === 'OPTIONS') {
         res.sendStatus(204);
         return;
@@ -83,6 +92,18 @@ export function createApp(
       authRequired: !!options.token,
     });
   });
+  // Polling does not consume the analysis submission rate limit.
+  app.get('/api/analysis-jobs/:id', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const job = jobs.get(req.params.id, req.get('X-AVA-Job-Key') || '');
+    if (!job) {
+      res
+        .status(404)
+        .json({ error: '任务已过期或分析服务已重启，请重新提问。已有分析记录仍保留。' });
+      return;
+    }
+    res.json(job);
+  });
   app.use(
     '/api',
     rateLimit({
@@ -94,7 +115,58 @@ export function createApp(
     }),
   );
   app.use(express.json({ limit: '8mb' }));
-  let active = 0;
+  app.post('/api/analysis-jobs', (req, res) => {
+    const parsed = analysisJobRequest.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || '请求格式无效' });
+      return;
+    }
+    const { id, key, payload } = parsed.data;
+    const existing = jobs.get(id, key);
+    if (existing) {
+      res.json(existing);
+      return;
+    }
+    if (jobs.has(id)) {
+      res.status(409).json({ error: '任务标识冲突，请重新提交。' });
+      return;
+    }
+    if (payload.mode === 'live' && !options.model) {
+      res
+        .status(503)
+        .json({ error: '尚未配置模型，请在服务端设置 AVA_API_KEY 和 AVA_MODEL 后重启' });
+      return;
+    }
+    if (payload.mode === 'demo' && payload.snapshot.source !== 'demo') {
+      res.status(400).json({ error: '飞书数据需要使用模型分析模式' });
+      return;
+    }
+    if (active >= 2) {
+      res.status(429).json({ error: '分析服务正在忙，请稍后重试' });
+      return;
+    }
+    active++;
+    const job = jobs.start(
+      id,
+      key,
+      async () => {
+        try {
+          return await (options.analyze ?? runAnalysis)(
+            payload.question,
+            payload.snapshot,
+            payload.mode,
+            options.model,
+            payload.related,
+          );
+        } finally {
+          active--;
+        }
+      },
+      analysisFailure,
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(202).json(job);
+  });
   app.post('/api/analyze', async (req, res) => {
     const parsed = analysisRequest.safeParse(req.body);
     if (!parsed.success) {
@@ -133,11 +205,7 @@ export function createApp(
       if (!res.headersSent && !res.destroyed) res.json(result);
     } catch (error) {
       // Provider errors can contain credentials or raw table values. Do not expose or log them.
-      const message =
-        error instanceof JoinSelectionError ||
-        (error instanceof Error && error.message.startsWith('演示模式支持'))
-          ? error.message
-          : '分析未完成，请检查模型配置与网络连接，或换一种提问方式。';
+      const message = analysisFailure(error);
       if (!res.headersSent && !res.destroyed) res.status(422).json({ error: message });
     } finally {
       clearTimeout(timer);

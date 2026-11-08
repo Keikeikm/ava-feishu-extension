@@ -76,3 +76,9 @@ export const analysisRequest = z
       add('请选择两张表中类型相同、且已勾选的关联字段');
     }
   });
+
+export const analysisJobRequest = z.object({
+  id: z.uuid(),
+  key: z.uuid(),
+  payload: analysisRequest,
+});

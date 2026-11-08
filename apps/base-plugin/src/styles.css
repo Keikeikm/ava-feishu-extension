@@ -1811,6 +1811,20 @@ td {
   padding: 4px 10px;
   white-space: nowrap;
 }
+.view-settings-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.view-settings-bar select {
+  min-width: 0;
+  max-width: 220px;
+  color: #7463b3;
+  background: #fff;
+  border: 1px solid #e3dff0;
+  border-radius: 5px;
+  padding: 4px 8px;
+}
 
 .plugin-entry {
   max-width: 560px;

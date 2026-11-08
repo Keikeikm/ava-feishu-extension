@@ -2,7 +2,14 @@
 module.exports = function developmentProxy(target, token, port) {
   // opdev owns /api/block and /api/meta. They must remain reachable by the Feishu host.
   const analysisPaths = new Set(['/api/status', '/api/connection', '/api/analyze']);
-  const isAnalysisRequest = (path) => analysisPaths.has(path.split('?')[0]);
+  const isAnalysisRequest = (path) => {
+    const pathname = path.split('?')[0];
+    return (
+      analysisPaths.has(pathname) ||
+      pathname === '/api/analysis-jobs' ||
+      /^\/api\/analysis-jobs\/[a-f0-9-]{36}$/.test(pathname)
+    );
+  };
   const origins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`]);
   const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
   return {

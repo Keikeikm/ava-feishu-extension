@@ -1,4 +1,4 @@
-import type { ServerStatus } from '../../shared/types';
+import type { AnalysisJob, PendingAnalysis, ServerStatus } from '../../shared/types';
 
 declare const __AVA_API_ORIGIN__: string;
 declare const __AVA_MANAGED_CONNECTION__: boolean;
@@ -8,6 +8,39 @@ export const automaticConnection =
 
 export function apiUrl(path: string) {
   return `${apiOrigin}${path}`;
+}
+
+export class AnalysisRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export async function analysisJobRequest(
+  pending: PendingAnalysis,
+  token: string,
+  signal: AbortSignal,
+  payload?: unknown,
+): Promise<AnalysisJob> {
+  const response = await fetch(
+    apiUrl(payload ? '/api/analysis-jobs' : `/api/analysis-jobs/${pending.id}`),
+    {
+      method: payload ? 'POST' : 'GET',
+      cache: 'no-store',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      headers: {
+        ...(!automaticConnection && token ? { Authorization: `Bearer ${token.trim()}` } : {}),
+        ...(payload ? { 'Content-Type': 'application/json' } : { 'X-AVA-Job-Key': pending.key }),
+      },
+      ...(payload ? { body: JSON.stringify({ id: pending.id, key: pending.key, payload }) } : {}),
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) throw new AnalysisRequestError(body.error || '分析请求失败', response.status);
+  return body;
 }
 
 export async function fetchServerStatus(token = '', signal?: AbortSignal): Promise<ServerStatus> {

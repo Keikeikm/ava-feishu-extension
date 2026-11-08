@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   ArrowDownToLine,
@@ -32,14 +32,31 @@ import {
   DEMO_QUESTIONS,
   MAX_ROWS,
   type AnalysisResult,
+  type AnalysisJob,
+  type PendingAnalysis,
   type ServerStatus,
   type Snapshot,
 } from '../shared/types';
 import { connectFeishu, listViews, loadFeishu, readViewConfig, saveViewConfig } from './lib/feishu';
 import { download, exportReport, toCsv } from './lib/export';
-import { apiOrigin, apiUrl, automaticConnection, fetchServerStatus } from './lib/api';
+import {
+  apiOrigin,
+  automaticConnection,
+  fetchServerStatus,
+  analysisJobRequest,
+  AnalysisRequestError,
+} from './lib/api';
 import { DataTable } from './components/DataTable';
 import { RelatedSource } from './components/RelatedSource';
+import {
+  conversationKey,
+  readConversation,
+  writeConversation,
+  readActiveSource,
+  writeActiveSource,
+  type Conversation,
+  type ConversationScope,
+} from './lib/conversations';
 const Chart = lazy(() =>
   import('./components/Chart').then((module) => ({ default: module.Chart })),
 );
@@ -88,7 +105,14 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const [page, setPage] = useState<'analysis' | 'data'>('analysis');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [question, setQuestion] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<PendingAnalysis | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const busy = !!pending;
+  const [scope, setScope] = useState<ConversationScope | null>(null);
+  const [sessionKey, setSessionKey] = useState<string | null>(null);
+  const [storageNotice, setStorageNotice] = useState('');
+  const [clearing, setClearing] = useState(false);
+  const session = useRef<{ key: string; value: Conversation } | null>(null);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<AnalysisResult[]>([]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -112,6 +136,196 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const relatedFields = related?.fields.filter((f) => relatedSelected.includes(f.id)) ?? [];
   const primaryKeyField = fields.find((f) => f.id === primaryKey);
   const relatedKeyField = relatedFields.find((f) => f.id === relatedKey);
+
+  useLayoutEffect(() => {
+    session.current = sessionKey
+      ? {
+          key: sessionKey,
+          value: {
+            version: 1,
+            question,
+            history,
+            resultId: result?.id,
+            tab,
+            page,
+            pending,
+            error,
+            settings: {
+              viewId: snapshot.viewId,
+              selected,
+              ...(related
+                ? {
+                    related: {
+                      tableId: related.tableId,
+                      viewId: related.viewId,
+                      selected: relatedSelected,
+                      primaryKey,
+                      relatedKey,
+                    },
+                  }
+                : {}),
+            },
+          },
+        }
+      : null;
+  });
+  const persistCurrent = useCallback(async () => {
+    const current = session.current;
+    if (!current) return;
+    try {
+      await writeConversation(current.key, current.value);
+    } catch {
+      setStorageNotice('当前浏览器无法保存会话，切换页面后可能无法恢复。请检查浏览器存储设置。');
+    }
+  }, []);
+  useLayoutEffect(() => {
+    void persistCurrent();
+  }, [
+    persistCurrent,
+    sessionKey,
+    question,
+    history,
+    result?.id,
+    tab,
+    page,
+    pending,
+    error,
+    selected,
+    related,
+    relatedSelected,
+    primaryKey,
+    relatedKey,
+    snapshot.viewId,
+  ]);
+  async function savedConversation(owner: ConversationScope | null, id: string) {
+    if (!owner) return null;
+    try {
+      return await readConversation(conversationKey(owner, id));
+    } catch {
+      setStorageNotice('当前浏览器无法读取已保存的会话。');
+      return null;
+    }
+  }
+
+  async function activateSource(
+    data: Snapshot,
+    owner: ConversationScope | null,
+    saved: Conversation | null,
+    version: number,
+  ) {
+    let other: Snapshot | null = null;
+    let canRestore =
+      !!saved &&
+      saved.settings.selected.every((id) => data.fields.some((field) => field.id === id));
+    const linked = saved?.settings.related;
+    if (linked) {
+      try {
+        other = await timeout(
+          loadFeishu(linked.tableId, linked.viewId, () => {}),
+          60_000,
+        );
+        canRestore &&= linked.selected.every((id) =>
+          other!.fields.some((field) => field.id === id),
+        );
+      } catch {
+        canRestore = false;
+        setStorageNotice('关联表已不可读取，历史结果暂不展示。请重新确认数据权限与范围。');
+      }
+    }
+    if (version !== sourceRequest.current) return;
+    setSnapshot(data);
+    setSelected(
+      saved
+        ? saved.settings.selected.filter((id) => data.fields.some((field) => field.id === id))
+        : data.fields.map((field) => field.id),
+    );
+    setRelated(other);
+    setRelatedSelected(
+      other && linked
+        ? linked.selected.filter((id) => other!.fields.some((field) => field.id === id))
+        : [],
+    );
+    setPrimaryKey(linked?.primaryKey || '');
+    setRelatedKey(linked?.relatedKey || '');
+    setQuestion(saved?.question || '');
+    const previous = canRestore ? saved!.history : [];
+    setHistory(previous);
+    const chosen = previous.find((item) => item.id === saved?.resultId) || previous[0] || null;
+    setResult(chosen);
+    setTab(saved?.tab || (chosen?.chart ? 'chart' : 'data'));
+    setPage(saved?.page || 'analysis');
+    setError(canRestore ? saved!.error : '');
+    setPending(canRestore ? saved!.pending : null);
+    setSubmitted(!!(canRestore && saved!.pending));
+    setScope(owner);
+    setSessionKey(owner ? conversationKey(owner, data.tableId) : null);
+    if (owner) {
+      try {
+        await writeActiveSource(owner, data.tableId);
+      } catch {
+        setStorageNotice('当前浏览器无法保存所选数据表。');
+      }
+    }
+  }
+
+  function receiveJob(job: AnalysisJob, started: PendingAnalysis, key: string | null) {
+    if (key !== (session.current?.key ?? null)) return;
+    if (job.status === 'running') return;
+    if (job.status === 'succeeded') {
+      const next = { ...job.result, sourceLoadedAt: started.sourceLoadedAt };
+      setResult(next);
+      setHistory((previous) =>
+        [next, ...previous.filter((item) => item.id !== next.id)].slice(0, 10),
+      );
+      setTab(next.chart ? 'chart' : 'data');
+      setQuestion('');
+      setError('');
+    } else {
+      setError(job.error);
+    }
+    setPending(null);
+    setSubmitted(false);
+  }
+
+  useEffect(() => {
+    if (!pending || !submitted) return;
+    const controller = new AbortController();
+    const key = sessionKey;
+    const startedAt = Date.now();
+    let wake: ReturnType<typeof setTimeout>;
+    const pause = (ms: number) =>
+      new Promise<void>((resolve) => {
+        wake = setTimeout(resolve, ms);
+      });
+    void (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          const job = await analysisJobRequest(pending, token, controller.signal);
+          if (controller.signal.aborted) return;
+          if (job.status !== 'running') {
+            receiveJob(job, pending, key);
+            return;
+          }
+          await pause(700);
+        } catch (failure) {
+          if (controller.signal.aborted) return;
+          if (
+            failure instanceof AnalysisRequestError &&
+            failure.status === 404 &&
+            Date.now() - startedAt > 5000
+          ) {
+            receiveJob({ id: pending.id, status: 'failed', error: failure.message }, pending, key);
+            return;
+          }
+          await pause(1500);
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      clearTimeout(wake);
+    };
+  }, [pending?.id, submitted, sessionKey, token]);
 
   const refreshStatus = useCallback(async (accessToken = '', signal?: AbortSignal) => {
     setStatusLoading(true);
@@ -149,39 +363,66 @@ export default function App({ preview = false }: { preview?: boolean }) {
     };
   }, [refreshStatus]);
   useEffect(() => {
-    if (preview) return;
     const version = ++sourceRequest.current;
     setConnecting(true);
     void (async () => {
       try {
+        if (preview) {
+          const owner = { userId: 'local-preview', baseId: 'demo', viewId: 'preview' };
+          await activateSource(
+            demoSnapshot,
+            owner,
+            await savedConversation(owner, demoSnapshot.tableId),
+            version,
+          );
+          return;
+        }
         const connection = await timeout(connectFeishu());
-        const saved = await timeout(readViewConfig()).catch(() => null);
+        const configured = await timeout(readViewConfig()).catch(() => null);
+        const active = connection.scope
+          ? await readActiveSource(connection.scope).catch(() => undefined)
+          : undefined;
         const id =
-          saved && connection.tables.some((t) => t.id === saved.tableId)
-            ? saved.tableId
-            : connection.tableId;
+          active && connection.tables.some((table) => table.id === active)
+            ? active
+            : configured && connection.tables.some((table) => table.id === configured.tableId)
+              ? configured.tableId
+              : connection.tableId;
         if (!id) throw new Error('当前飞书上下文没有可读取的数据表');
+        if (!connection.scope)
+          setStorageNotice('未取得当前用户或 Base 标识，本次无法自动保存会话。');
+        const saved = await savedConversation(connection.scope, id);
         const available = await timeout(listViews(id));
-        const sourceView =
-          saved?.tableId === id && available.some((v) => v.id === saved.sourceViewId)
-            ? saved.sourceViewId
+        const sourceView = saved
+          ? saved.settings.viewId
+          : configured?.tableId === id
+            ? configured.sourceViewId
             : undefined;
+        if (sourceView && !available.some((view) => view.id === sourceView)) {
+          throw new Error('之前选择的源视图已不可用，请重新选择数据范围。');
+        }
         if (version !== sourceRequest.current) return;
         setTables(connection.tables);
         setTableId(id);
         setViews(available);
-        setViewId(sourceView ?? '');
+        setViewId(sourceView || '');
         const data = await timeout(loadFeishu(id, sourceView, setProgress), 60_000);
-        if (version !== sourceRequest.current) return;
-        setSnapshot(data);
-        setSelected(
-          saved?.tableId === id && saved.fieldIds
-            ? data.fields.filter((f) => saved.fieldIds!.includes(f.id)).map((f) => f.id)
-            : data.fields.map((f) => f.id),
-        );
-      } catch (e) {
+        await activateSource(data, connection.scope, saved, version);
+        if (
+          !saved &&
+          configured?.tableId === id &&
+          configured.fieldIds &&
+          version === sourceRequest.current
+        ) {
+          setSelected(
+            data.fields
+              .filter((field) => configured.fieldIds!.includes(field.id))
+              .map((field) => field.id),
+          );
+        }
+      } catch (failure) {
         if (version === sourceRequest.current)
-          setError(e instanceof Error ? e.message : '飞书宿主初始化失败，请检查插件权限');
+          setError(failure instanceof Error ? failure.message : '飞书宿主初始化失败');
       } finally {
         if (version === sourceRequest.current) setConnecting(false);
       }
@@ -204,11 +445,33 @@ export default function App({ preview = false }: { preview?: boolean }) {
     }
   }, [toast]);
 
+  async function clearConversation() {
+    if (clearing || busy) return;
+    setClearing(true);
+    try {
+      const current = session.current;
+      if (current)
+        await writeConversation(current.key, {
+          ...current.value,
+          question: '',
+          history: [],
+          resultId: undefined,
+          error: '',
+          pending: null,
+        });
+      setHistory([]);
+      setResult(null);
+      setQuestion('');
+      setError('');
+    } catch {
+      setStorageNotice('清空未完成，浏览器无法写入会话存储。请重试。');
+    } finally {
+      setClearing(false);
+    }
+  }
+
   function resetAnalysis() {
-    setHistory([]);
-    setResult(null);
     setError('');
-    setTab('chart');
   }
   function changeRelated(next: Snapshot | null) {
     setRelated(next);
@@ -219,11 +482,16 @@ export default function App({ preview = false }: { preview?: boolean }) {
     setDialog(next ? 'fields' : null);
   }
 
-  function useDemo() {
-    changeRelated(null);
-    setSnapshot({ ...demoSnapshot, loadedAt: new Date().toISOString() });
-    setSelected(demoSnapshot.fields.map((f) => f.id));
-    resetAnalysis();
+  async function useDemo() {
+    await persistCurrent();
+    const owner = { userId: 'local-preview', baseId: 'demo', viewId: 'preview' };
+    const version = ++sourceRequest.current;
+    await activateSource(
+      { ...demoSnapshot, loadedAt: new Date().toISOString() },
+      owner,
+      await savedConversation(owner, demoSnapshot.tableId),
+      version,
+    );
     setDialog(null);
     setPage('analysis');
   }
@@ -235,6 +503,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
       const connection = await timeout(connectFeishu());
       if (version !== sourceRequest.current) return;
       if (!connection.tableId) throw new Error('当前多维表格中没有可读取的数据表');
+      setScope(connection.scope);
       setTables(connection.tables);
       setTableId(connection.tableId);
       setViewId('');
@@ -255,8 +524,15 @@ export default function App({ preview = false }: { preview?: boolean }) {
     setSourceError('');
     const version = ++sourceRequest.current;
     try {
-      const list = await timeout(listViews(id));
-      if (version === sourceRequest.current) setViews(list);
+      const [list, saved] = await Promise.all([
+        timeout(listViews(id)),
+        savedConversation(scope, id),
+      ]);
+      if (version === sourceRequest.current) {
+        setViews(list);
+        if (saved?.settings.viewId && list.some((view) => view.id === saved.settings.viewId))
+          setViewId(saved.settings.viewId);
+      }
     } catch {
       if (version === sourceRequest.current) setSourceError('无法读取视图，请检查权限后重试。');
     } finally {
@@ -269,31 +545,15 @@ export default function App({ preview = false }: { preview?: boolean }) {
     setProgress(0);
     const version = ++sourceRequest.current;
     try {
-      const [next, nextRelated] = await timeout(
-        Promise.all([
-          loadFeishu(
-            refresh ? snapshot.tableId : tableId,
-            refresh ? snapshot.viewId : viewId || undefined,
-            setProgress,
-          ),
-          refresh && related
-            ? loadFeishu(related.tableId, related.viewId, () => {})
-            : Promise.resolve(null),
-        ]),
+      await persistCurrent();
+      const id = refresh ? snapshot.tableId : tableId;
+      const saved = await savedConversation(scope, id);
+      const next = await timeout(
+        loadFeishu(id, refresh ? snapshot.viewId : viewId || undefined, setProgress),
         60_000,
       );
+      await activateSource(next, scope, saved, version);
       if (version !== sourceRequest.current) return;
-      setSnapshot(next);
-      setSelected(next.fields.filter((f) => !refresh || selected.includes(f.id)).map((f) => f.id));
-      if (refresh) {
-        setRelated(nextRelated);
-        setRelatedSelected(
-          nextRelated?.fields.filter((f) => relatedSelected.includes(f.id)).map((f) => f.id) ?? [],
-        );
-      } else {
-        changeRelated(null);
-      }
-      resetAnalysis();
       setDialog(null);
       setToast('数据已加载，分析将使用本次快照');
     } catch (e) {
@@ -337,50 +597,64 @@ export default function App({ preview = false }: { preview?: boolean }) {
       setError('两张表合计不能超过 10,000 条记录，请缩小视图范围。');
       return;
     }
-    setBusy(true);
+    const started: PendingAnalysis = {
+      id: crypto.randomUUID(),
+      key: crypto.randomUUID(),
+      query: query.trim(),
+      createdAt: new Date().toISOString(),
+      sourceLoadedAt: snapshot.loadedAt,
+    };
+    setPending(started);
+    setSubmitted(false);
     setError('');
     setPage('analysis');
     const controller = new AbortController();
     request.current = controller;
-    const timer = setTimeout(() => controller.abort('timeout'), 125_000);
-    try {
-      const response = await fetch(apiUrl('/api/analyze'), {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(!automaticConnection && token ? { Authorization: `Bearer ${token.trim()}` } : {}),
-        },
-        body: JSON.stringify({
+    const key = sessionKey;
+    const current = session.current;
+    if (current) {
+      try {
+        await writeConversation(current.key, {
+          ...current.value,
+          pending: started,
           question: query.trim(),
-          mode,
-          snapshot: { ...snapshot, fields, rows: filteredRows },
-          ...(related && {
-            related: {
-              snapshot: {
-                ...related,
-                fields: relatedFields,
-                rows: projectRows(related, relatedFields),
+          error: '',
+        });
+      } catch {
+        setStorageNotice('本次任务无法保存到浏览器，切换页面后可能无法恢复。');
+      }
+    }
+    if (controller.signal.aborted) return;
+    try {
+      const job = await analysisJobRequest(started, token, controller.signal, {
+        question: query.trim(),
+        mode,
+        snapshot: { ...snapshot, fields, rows: filteredRows },
+        ...(related
+          ? {
+              related: {
+                snapshot: {
+                  ...related,
+                  fields: relatedFields,
+                  rows: projectRows(related, relatedFields),
+                },
+                primaryFieldId: primaryKey,
+                relatedFieldId: relatedKey,
               },
-              primaryFieldId: primaryKey,
-              relatedFieldId: relatedKey,
-            },
-          }),
-        }),
+            }
+          : {}),
       });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || '分析请求失败');
-      const next = body as AnalysisResult;
-      setResult(next);
-      setHistory((prev) => [next, ...prev].slice(0, 10));
-      setTab(next.chart ? 'chart' : 'data');
-      setQuestion('');
-    } catch (e) {
-      if (controller.signal.aborted) setError('分析已停止或超时，可以缩小数据范围后重试。');
-      else setError(e instanceof Error ? e.message : '网络连接失败，请重试');
+      if (controller.signal.aborted || key !== (session.current?.key ?? null)) return;
+      if (job.status === 'running') setSubmitted(true);
+      else receiveJob(job, started, key);
+    } catch (failure) {
+      if (controller.signal.aborted) return;
+      if (failure instanceof AnalysisRequestError) {
+        receiveJob({ id: started.id, status: 'failed', error: failure.message }, started, key);
+      } else {
+        setSubmitted(true);
+      }
     } finally {
-      clearTimeout(timer);
-      setBusy(false);
       request.current = null;
     }
   }
@@ -495,7 +769,12 @@ export default function App({ preview = false }: { preview?: boolean }) {
           </div>
           <div className="sidebar-section history-heading">
             <span>最近分析</span>
-            <span className="tiny">本次会话</span>
+            <button
+              disabled={busy || connecting || clearing || !history.length}
+              onClick={() => void clearConversation()}
+            >
+              清空对话
+            </button>
           </div>
           <div className="history-list">
             {history.length ? (
@@ -631,7 +910,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 <button
                   disabled={busy || connecting}
                   onClick={() => (snapshot.source === 'demo' ? useDemo() : loadSource(true))}
-                  title="重新加载数据，清空分析历史"
+                  title="重新加载数据，保留已有分析记录"
                 >
                   <RefreshCw size={14} className={connecting ? 'spin' : ''} />
                   <span>{connecting ? `已读取 ${progress} 条` : '刷新数据'}</span>
@@ -651,6 +930,31 @@ export default function App({ preview = false }: { preview?: boolean }) {
                         {related ? '更换关联表' : '添加关联表'}
                       </button>
                     )}
+                    <label>
+                      分析记录
+                      <select
+                        aria-label="分析记录"
+                        value={result?.id || ''}
+                        disabled={busy || !history.length}
+                        onChange={(event) => {
+                          setResult(history.find((item) => item.id === event.target.value) || null);
+                          setPage('analysis');
+                        }}
+                      >
+                        {!history.length && <option value="">暂无记录</option>}
+                        {history.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.query}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      disabled={busy || connecting || clearing}
+                      onClick={() => void clearConversation()}
+                    >
+                      清空对话
+                    </button>
                     <button onClick={() => setPage(page === 'data' ? 'analysis' : 'data')}>
                       {page === 'data' ? '返回提问' : '数据预览'}
                     </button>
@@ -666,7 +970,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                         .then(() =>
                           setToast(
                             related
-                              ? '主表设置已保存；关联表仅用于本次会话'
+                              ? '主表设置已保存；关联设置自动保存在当前浏览器'
                               : '视图设置已保存，下次打开将恢复',
                           ),
                         )
@@ -710,6 +1014,11 @@ export default function App({ preview = false }: { preview?: boolean }) {
                     <button onClick={() => setDialog('settings')}>连接设置</button>
                   </div>
                 )}
+              {storageNotice && (
+                <p className="notice" role="status">
+                  {storageNotice}
+                </p>
+              )}
               {statusError && (
                 <div className="notice" role="status">
                   <Settings2 size={16} />
@@ -864,7 +1173,10 @@ export default function App({ preview = false }: { preview?: boolean }) {
                       </span>
                       <div>
                         <h3>正在寻找数据中的答案</h3>
-                        <p>AVA 正在计算结果、整理结论并准备图表…</p>
+                        <p>
+                          AVA
+                          正在计算结果、整理结论并准备图表。切换页面后任务会继续，返回时自动恢复。
+                        </p>
                       </div>
                     </section>
                   )}
@@ -1006,7 +1318,9 @@ export default function App({ preview = false }: { preview?: boolean }) {
                       <div className="result-footnote">
                         <ShieldCheck size={13} />
                         <span>
-                          分析基于当前快照
+                          {result.sourceLoadedAt
+                            ? `分析基于 ${new Date(result.sourceLoadedAt).toLocaleString('zh-CN')} 的数据快照`
+                            : '分析基于提交时的数据快照'}
                           {result.mode === 'live' ? '，请核对重要结论' : ' · 演示数据与预设查询'}。
                         </span>
                         <Check size={13} />
@@ -1271,7 +1585,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 <p className="modal-intro">
                   {lockedFields
                     ? '演示模式使用固定字段。连接模型后可按需选择。'
-                    : '只发送勾选的字段。修改字段会清空分析历史；点击「保存视图设置」可供下次打开时恢复。'}
+                    : '只发送勾选的字段。修改字段只影响下一次分析，已有记录保留；视图设置可另行保存。'}
                 </p>
                 {related && <h3>{snapshot.tableName}</h3>}
                 <div className="fields-list">
@@ -1352,7 +1666,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                             ))}
                         </select>
                       </label>
-                      <p>关联表键值需唯一。分析前会检查匹配率；关联表与关联键只在本次会话生效。</p>
+                      <p>关联表键值需唯一。分析前会检查匹配率；关联设置自动保存在当前浏览器。</p>
                     </div>
                   </>
                 )}
@@ -1462,7 +1776,8 @@ export default function App({ preview = false }: { preview?: boolean }) {
                   </li>
                 </ol>
                 <p className="modal-note">
-                  修改源数据后需刷新快照。切换数据源或分析字段会清空本次会话的分析历史。
+                  修改源数据后需刷新快照。草稿与最近 10
+                  次分析自动保存在当前浏览器，切换表格或页面后可恢复。
                 </p>
                 <div className="help-links">
                   <a

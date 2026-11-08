@@ -33,7 +33,21 @@ export interface AnalysisResult extends Pick<AnalysisResponse, 'query' | 'text' 
   elapsedMs: number;
   mode: 'demo' | 'live';
   createdAt: string;
+  sourceLoadedAt?: string;
 }
+
+export interface PendingAnalysis {
+  id: string;
+  key: string;
+  query: string;
+  createdAt: string;
+  sourceLoadedAt?: string;
+}
+
+export type AnalysisJob =
+  | { id: string; status: 'running' }
+  | { id: string; status: 'succeeded'; result: AnalysisResult }
+  | { id: string; status: 'failed'; error: string };
 
 export interface ServerStatus {
   ready: boolean;
