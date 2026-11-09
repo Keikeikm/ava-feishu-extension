@@ -1,8 +1,30 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import {
+  bindLarkCli,
+  parseBaseUrl,
+  probeBase,
+  resolveBase,
+} from '../../../scripts/feishu/lark-cli.mjs';
 import { readConfig } from './plugin-config.mjs';
 
 async function main() {
+  const { values } = parseArgs({
+    options: {
+      url: { type: 'string' },
+      profile: { type: 'string' },
+      model: { type: 'boolean' },
+      stream: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  if (values.help) {
+    console.log(
+      'npm run doctor:plugin -- [--url <Base 链接>] [--profile <名称>] [--model | --stream]',
+    );
+    return;
+  }
   console.log(`检查配置：${fileURLToPath(new URL('../.env', import.meta.url))}`);
   const missing = ['AVA_API_KEY', 'AVA_MODEL'].filter((name) => !process.env[name]?.trim());
   if (missing.length)
@@ -18,7 +40,12 @@ async function main() {
     throw new Error('没有正在运行的本地调试会话，请先运行 npm run dev:plugin。');
   }
   const config = await readConfig();
-  const hostOrigin = new URL(config.block.url).origin;
+  const target = parseBaseUrl(values.url ?? config.block.url);
+  const hostOrigin = target.url.origin;
+  if (values.url) {
+    target.url.searchParams.set('debugPort', new URL(connection.debugOrigin).port);
+    console.log(`目标表格调试链接：${target.url}`);
+  }
   const hostRequest = async (path) => {
     const response = await fetch(new URL(path, connection.debugOrigin), {
       headers: { Origin: hostOrigin },
@@ -81,7 +108,16 @@ async function main() {
     );
   }
   console.log('✓ 调试视图 → 自动认证代理 → 分析 API 连接正常');
-  if (process.argv.includes('--model') || process.argv.includes('--stream')) {
+  if (values.profile) {
+    const cli = await bindLarkCli(config.app.appId, target.brand, values.profile);
+    const baseToken = await resolveBase(cli, 'user', target);
+    const { tableId, hasVisibleRecord } = await probeBase(cli, 'user', baseToken, target.tableId);
+    console.log(
+      `✓ CLI 登录用户通过 OpenAPI 试读成功（${tableId}${hasVisibleRecord ? '' : '，未返回可见记录'}）`,
+    );
+    console.log('请在目标表格内打开 AVA，确认飞书宿主 SDK 能读取数据。');
+  }
+  if (values.model || values.stream) {
     console.log('正在用三条内置测试数据验证真实模型、SQL 计算和图表流程…');
     const { runAnalysis } = await import('../server/analysis.ts');
     try {
@@ -105,7 +141,7 @@ async function main() {
           baseURL: process.env.AVA_BASE_URL?.trim() || undefined,
         },
         undefined,
-        process.argv.includes('--stream')
+        values.stream
           ? (update) => {
               if (update.type === 'text') {
                 textChunks++;
@@ -117,7 +153,7 @@ async function main() {
       if (!result.data.some((row) => Object.values(row).some((value) => Number(value) === 6))) {
         throw new Error('unexpected result');
       }
-      if (process.argv.includes('--stream')) {
+      if (values.stream) {
         const native =
           result.steps?.find((step) => step.id === 'summary')?.detail === '文本已实时返回';
         console.log(

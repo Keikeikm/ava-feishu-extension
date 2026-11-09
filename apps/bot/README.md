@@ -72,6 +72,8 @@ npm start -w @ava/bot
 
 **导入 Base**：开通 `bitable:app:readonly`，并在表格中为同一应用授予文档访问权限，然后发送原始 `/base/` 链接。整份 Base 会加载所有子表，带 `table=tbl…` 时只加载指定表；跨表提问应说明表名、关联键和统计口径。`/wiki/` 链接还需 `wiki:wiki:readonly` 及知识空间访问权限。
 
+读表失败时，可用[飞书 CLI 诊断与授权](../../scripts/feishu/README.md)核对应用身份、预览 Base 授权并复查。
+
 **群聊**：加入群并开通 `im:message.group_at_msg:readonly`，通过 `GET /open-apis/bot/v3/info` 获取机器人的 `open_id`，填入 `FEISHU_BOT_OPEN_ID`，再通过 `@` 提问。接收群文件还需 `im:message.group_msg`。修改权限后需重新发布应用。
 
 ## 4. 部署与运行

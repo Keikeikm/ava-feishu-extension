@@ -50,6 +50,8 @@ npm run doctor:plugin -- --model
 npm run doctor:plugin -- --stream
 ```
 
+换表格时可运行 `npm run doctor:plugin -- --url '<Base 链接>'` 检查目标域名并打印带当前端口的调试链接。加 `--profile <插件的 CLI profile>` 可额外检查登录用户的 OpenAPI 读权限。[CLI 配置和验证说明](../../scripts/feishu/README.md)
+
 页面会区分「服务未连接」和「未配置模型」，支持重新检查，并自动重试连接。
 
 本地添加菜单的名称取自 `plugin/block.json` 的 `projectName`。修改后重启调试并刷新飞书页面：
