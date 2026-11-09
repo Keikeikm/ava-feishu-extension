@@ -41,6 +41,14 @@ async function main() {
   ) {
     throw new Error('本地注册返回的 App ID / BlockTypeID 与绑定配置不一致。');
   }
+  const registration = blocks.blocks.find(
+    (block) => block.blockTypeID === config.block.blockTypeID,
+  );
+  const expectedName = config.block.projectName?.trim() || 'AVA 数据洞察';
+  if (registration.name?.['zh-CN'] !== expectedName) {
+    throw new Error('本地插件显示名称未更新，请重启 npm run dev:plugin，并刷新整个飞书页面。');
+  }
+  console.log(`✓ 本地插件名称：${expectedName}`);
   const meta = await hostRequest('/api/meta');
   const app = meta.app_metas?.find((app) => app.app_base_info?.app_id === config.app.appId);
   const extension = app?.extension_metas?.find(
@@ -73,10 +81,13 @@ async function main() {
     );
   }
   console.log('✓ 调试视图 → 自动认证代理 → 分析 API 连接正常');
-  if (process.argv.includes('--model')) {
+  if (process.argv.includes('--model') || process.argv.includes('--stream')) {
     console.log('正在用三条内置测试数据验证真实模型、SQL 计算和图表流程…');
     const { runAnalysis } = await import('../server/analysis.ts');
     try {
+      let textChunks = 0;
+      let firstTextAt = 0;
+      const startedAt = Date.now();
       const result = await runAnalysis(
         '计算 amount 字段总和，返回一行合计结果',
         {
@@ -93,9 +104,27 @@ async function main() {
           model: process.env.AVA_MODEL.trim(),
           baseURL: process.env.AVA_BASE_URL?.trim() || undefined,
         },
+        undefined,
+        process.argv.includes('--stream')
+          ? (update) => {
+              if (update.type === 'text') {
+                textChunks++;
+                firstTextAt ||= Date.now();
+              }
+            }
+          : undefined,
       );
       if (!result.data.some((row) => Object.values(row).some((value) => Number(value) === 6))) {
         throw new Error('unexpected result');
+      }
+      if (process.argv.includes('--stream')) {
+        const native =
+          result.steps?.find((step) => step.id === 'summary')?.detail === '文本已实时返回';
+        console.log(
+          native
+            ? `✓ 模型原生流式返回：${textChunks} 个片段，首段 ${((firstTextAt - startedAt) / 1000).toFixed(1)} 秒`
+            : '✓ 当前模型按整段返回，实时阶段和任务恢复仍可使用',
+        );
       }
     } catch {
       throw new Error(

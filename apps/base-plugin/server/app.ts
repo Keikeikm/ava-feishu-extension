@@ -92,6 +92,40 @@ export function createApp(
       authRequired: !!options.token,
     });
   });
+  app.get('/api/analysis-jobs/:id/events', (req, res) => {
+    const key = req.get('X-AVA-Job-Key') || '';
+    if (!jobs.get(req.params.id, key)) {
+      res
+        .status(404)
+        .json({ error: '任务已过期或分析服务已重启，请重新提问。已有分析记录仍保留。' });
+      return;
+    }
+    res.set({
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    const unsubscribe = jobs.subscribe(req.params.id, key, (event) => {
+      if (res.destroyed || res.writableEnded) return;
+      if (res.writableLength > 1024 * 1024) {
+        res.destroy();
+        return;
+      }
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === 'snapshot' && event.job.status !== 'running') res.end();
+    });
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': heartbeat\n\n');
+    }, 15_000);
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      unsubscribe?.();
+    };
+    res.on('close', cleanup);
+    if (res.writableEnded) cleanup();
+  });
   // Polling does not consume the analysis submission rate limit.
   app.get('/api/analysis-jobs/:id', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -149,7 +183,7 @@ export function createApp(
     const job = jobs.start(
       id,
       key,
-      async () => {
+      async (publish) => {
         try {
           return await (options.analyze ?? runAnalysis)(
             payload.question,
@@ -157,6 +191,7 @@ export function createApp(
             payload.mode,
             options.model,
             payload.related,
+            publish,
           );
         } finally {
           active--;

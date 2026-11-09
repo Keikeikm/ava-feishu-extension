@@ -1,7 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { AnalysisJob, AnalysisResult } from '../shared/types';
+import type { AnalysisJob, AnalysisResult, AnalysisUpdate, JobStreamEvent } from '../shared/types';
 
-type Entry = { key: string; job: AnalysisJob; settledAt?: number };
+import { applyAnalysisUpdate } from '../shared/progress';
+type Entry = {
+  key: string;
+  job: AnalysisJob;
+  settledAt?: number;
+  listeners: Set<(event: JobStreamEvent) => void>;
+};
 
 /** Task capabilities are private to a browser conversation, even with a shared API token. */
 export class AnalysisJobs {
@@ -29,6 +35,17 @@ export class AnalysisJobs {
     return entry.job;
   }
 
+  subscribe(id: string, key: string, listener: (event: JobStreamEvent) => void) {
+    const job = this.get(id, key);
+    if (!job) return null;
+    const entry = this.entries.get(id)!;
+    entry.listeners.add(listener);
+    listener({ type: 'snapshot', job });
+    return () => {
+      entry.listeners.delete(listener);
+    };
+  }
+
   has(id: string) {
     this.prune();
     return this.entries.has(id);
@@ -37,7 +54,7 @@ export class AnalysisJobs {
   start(
     id: string,
     key: string,
-    work: () => Promise<AnalysisResult>,
+    work: (publish: (update: AnalysisUpdate) => void) => Promise<AnalysisResult>,
     failure: (error: unknown) => string,
   ) {
     this.prune();
@@ -45,18 +62,40 @@ export class AnalysisJobs {
       const oldest = [...this.entries].find(([, entry]) => entry.settledAt !== undefined);
       if (oldest) this.entries.delete(oldest[0]);
     }
-    const entry: Entry = { key, job: { id, status: 'running' } };
+    const entry: Entry = { key, job: { id, status: 'running' }, listeners: new Set() };
+    const broadcast = (event: JobStreamEvent) => {
+      for (const listener of entry.listeners) listener(event);
+    };
+    const publish = (update: AnalysisUpdate) => {
+      if (entry.job.status !== 'running') return;
+      entry.job = {
+        id,
+        status: 'running',
+        progress: applyAnalysisUpdate(entry.job.progress, update),
+      };
+      broadcast({ type: 'update', update });
+    };
     this.entries.set(id, entry);
     void Promise.resolve()
-      .then(work)
+      .then(() => work(publish))
       .then(
         (result) => {
           entry.job = { id, status: 'succeeded', result };
           entry.settledAt = Date.now();
+          broadcast({ type: 'snapshot', job: entry.job });
+          entry.listeners.clear();
         },
         (error) => {
-          entry.job = { id, status: 'failed', error: failure(error) };
+          const progress = entry.job.status === 'running' ? entry.job.progress : undefined;
+          entry.job = {
+            id,
+            status: 'failed',
+            error: failure(error),
+            ...(progress ? { progress } : {}),
+          };
           entry.settledAt = Date.now();
+          broadcast({ type: 'snapshot', job: entry.job });
+          entry.listeners.clear();
         },
       );
     return entry.job;

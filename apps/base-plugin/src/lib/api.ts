@@ -67,3 +67,53 @@ export async function fetchServerStatus(token = '', signal?: AbortSignal): Promi
     ? read('/api/connection')
     : status;
 }
+
+/** Fetch-based SSE keeps both credentials in headers and supports abort/reconnect. */
+export async function streamAnalysisJob(
+  pending: PendingAnalysis,
+  token: string,
+  signal: AbortSignal,
+  onEvent: (event: import('../../shared/types').JobStreamEvent) => void,
+) {
+  const response = await fetch(apiUrl(`/api/analysis-jobs/${pending.id}/events`), {
+    cache: 'no-store',
+    signal: AbortSignal.any([signal, AbortSignal.timeout(150_000)]),
+    headers: {
+      Accept: 'text/event-stream',
+      'X-AVA-Job-Key': pending.key,
+      ...(!automaticConnection && token ? { Authorization: `Bearer ${token.trim()}` } : {}),
+    },
+  });
+  if (!response.ok) throw new AnalysisRequestError('实时连接暂不可用', response.status);
+  if (!response.headers.get('Content-Type')?.includes('text/event-stream') || !response.body)
+    throw new AnalysisRequestError('实时连接未启用', 405);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary: RegExpExecArray | null;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        const block = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        const data = block
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n');
+        if (!data) continue;
+        const event = JSON.parse(data) as import('../../shared/types').JobStreamEvent;
+        if (signal.aborted) return;
+        onEvent(event);
+        if (event.type === 'snapshot' && event.job.status !== 'running') return;
+      }
+      if (buffer.length > 8 * 1024 * 1024) throw new Error('实时响应过大');
+      if (done) return;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}

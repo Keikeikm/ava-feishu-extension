@@ -7,6 +7,7 @@ const {
 } = require('@lark-opdev/block-bitable-webpack-utils');
 const runtime = require('./runtime.config.json');
 const developmentProxy = require('../scripts/dev-proxy.cjs');
+const pluginDisplayName = require('../scripts/plugin-display-name.cjs');
 
 module.exports = (_env, argv) => {
   // The official plugin checks NODE_ENV to emit the opdev deployment manifests.
@@ -42,6 +43,8 @@ module.exports = (_env, argv) => {
     resolve: { extensions: ['.tsx', '.ts', '.js'] },
     module: {
       rules: [
+        // AntV publishes extensionless ESM imports; resolve its bundle like Vite/Next.js.
+        { test: /\.m?js$/, resolve: { fullySpecified: false } },
         {
           test: /\.tsx?$/,
           exclude: /node_modules/,
@@ -69,6 +72,10 @@ module.exports = (_env, argv) => {
       client: { overlay: true },
       ...(localProxy ? { proxy: [localProxy.proxy] } : {}),
       setupMiddlewares(middlewares, devServer) {
+        middlewares.unshift({
+          name: 'ava-plugin-display-name',
+          middleware: pluginDisplayName(require('./block.json')),
+        });
         if (localProxy)
           middlewares.unshift({ name: 'ava-local-api-guard', middleware: localProxy.guard });
         middlewares.push(opdevMiddleware(devServer));

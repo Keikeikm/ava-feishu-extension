@@ -43,3 +43,22 @@ describe('官方数据表视图工程', () => {
     expect(html).not.toContain('/@vite/client');
   });
 });
+
+it('插件名称参数独立更新显示名称，保留绑定标识和发布地址', async () => {
+  const { applyConfigArgs } = await import('../scripts/plugin-config.mjs');
+  const config = {
+    app: { appId: 'cli_fixture' },
+    block: {
+      blockTypeID: 'blk_fixture',
+      projectName: '旧名称',
+      url: 'https://example.feishu.cn/base/fixture',
+    },
+    runtime: { apiOrigin: 'https://example.test' },
+  };
+  const next = applyConfigArgs(config, ['--name', ' AVA 数据洞察 ']);
+  expect(next.block).toEqual({ ...config.block, projectName: 'AVA 数据洞察' });
+  expect(next.app).toEqual(config.app);
+  expect(next.runtime).toEqual(config.runtime);
+  expect(config.block.projectName).toBe('旧名称');
+  expect(() => applyConfigArgs(config, ['--name', '   '])).toThrow('插件名称');
+});

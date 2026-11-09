@@ -15,6 +15,7 @@ import { createApp } from '../server/app';
 import { demoSnapshot } from '../shared/demo';
 import { DEMO_QUESTIONS } from '../shared/types';
 import developmentProxy from '../scripts/dev-proxy.cjs';
+import pluginDisplayName from '../scripts/plugin-display-name.cjs';
 const require = createRequire(import.meta.url);
 const { createProxyMiddleware } = createRequire(require.resolve('webpack-dev-server'))(
   'http-proxy-middleware',
@@ -191,6 +192,14 @@ it('本地代理自动认证，拒绝外站和无来源的写请求，API 本身
     expect(polled.body.status).toBe('succeeded');
     expect(polled.body.result.data).toHaveLength(6);
   });
+  const events = await request(gateway)
+    .get(`/api/analysis-jobs/${id}/events`)
+    .set('Host', 'localhost:18081')
+    .set('Origin', 'http://localhost:18081')
+    .set('X-AVA-Job-Key', key);
+  expect(events.headers['content-type']).toContain('text/event-stream');
+  expect(events.text).toContain('"status":"succeeded"');
+  expect(events.text).not.toContain('only-on-server');
   for (const origin of ['https://untrusted.example', 'null']) {
     const blocked = await request(gateway)
       .post('/api/analyze')
@@ -244,4 +253,37 @@ it('实际绑定时端口再次被占用，API 仍能换端口并发布本次实
     headers: { Authorization: 'Bearer readiness-fixture' },
   });
   expect(response.status).toBe(200);
+});
+
+it('本地注册用插件名称替代 BlockTypeID，同时保留官方标识、图标和元数据', async () => {
+  const app = express();
+  app.use(pluginDisplayName({ blockTypeID: 'blk_fixture', projectName: 'AVA 数据洞察' }));
+  const original = {
+    code: 0,
+    msg: '',
+    data: {
+      blocks: [
+        {
+          name: { 'zh-CN': 'blk_fixture', 'en-US': 'blk_fixture' },
+          blockTypeID: 'blk_fixture',
+          appID: 'cli_fixture',
+          icon: 'official-icon',
+        },
+        { name: { 'zh-CN': '另一个插件' }, blockTypeID: 'blk_other' },
+      ],
+    },
+  };
+  app.get('/api/block', (_req, res) => res.set('Access-Control-Allow-Origin', '*').send(original));
+  app.get('/api/meta', (_req, res) => res.send({ code: 0, data: { original: true } }));
+  const response = await request(app).get('/api/block?app_id=cli_fixture');
+  expect(response.headers['access-control-allow-origin']).toBe('*');
+  expect(response.body.data.blocks[0]).toMatchObject({
+    name: { 'zh-CN': 'AVA 数据洞察', 'en-US': 'AVA 数据洞察', 'ja-JP': 'AVA 数据洞察' },
+    blockTypeID: 'blk_fixture',
+    appID: 'cli_fixture',
+    icon: 'official-icon',
+  });
+  expect(response.body.data.blocks[1]).toEqual(original.data.blocks[1]);
+  expect(original.data.blocks[0].name['zh-CN']).toBe('blk_fixture');
+  expect((await request(app).get('/api/meta')).body.data.original).toBe(true);
 });

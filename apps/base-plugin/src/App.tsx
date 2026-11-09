@@ -1,17 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowDownToLine,
   ArrowRight,
-  ArrowUp,
-  BarChart3,
   Check,
   ChevronDown,
   ChevronRight,
   CircleHelp,
   Clock3,
   Database,
-  FileText,
   Hash,
   Layers3,
   Link2,
@@ -23,7 +18,6 @@ import {
   ShieldCheck,
   Sparkles,
   Table2,
-  TrendingUp,
   Type,
   X,
 } from 'lucide-react';
@@ -38,15 +32,18 @@ import {
   type Snapshot,
 } from '../shared/types';
 import { connectFeishu, listViews, loadFeishu, readViewConfig, saveViewConfig } from './lib/feishu';
-import { download, exportReport, toCsv } from './lib/export';
+import { exportReport } from './lib/export';
 import {
   apiOrigin,
   automaticConnection,
   fetchServerStatus,
   analysisJobRequest,
+  streamAnalysisJob,
   AnalysisRequestError,
 } from './lib/api';
 import { DataTable } from './components/DataTable';
+import { AnalyticsWorkspace } from './components/AnalyticsWorkspace';
+import { applyAnalysisUpdate } from '../shared/progress';
 import { RelatedSource } from './components/RelatedSource';
 import {
   conversationKey,
@@ -57,9 +54,6 @@ import {
   type Conversation,
   type ConversationScope,
 } from './lib/conversations';
-const Chart = lazy(() =>
-  import('./components/Chart').then((module) => ({ default: module.Chart })),
-);
 
 type Meta = { id: string; name: string };
 type Dialog = 'source' | 'settings' | 'help' | 'fields' | 'related' | null;
@@ -129,11 +123,17 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const request = useRef<AbortController | null>(null);
   const sourceRequest = useRef(0);
-  const fields = snapshot.fields.filter((f) => selected.includes(f.id));
+  const fields = useMemo(
+    () => snapshot.fields.filter((f) => selected.includes(f.id)),
+    [snapshot.fields, selected],
+  );
   const mode = snapshot.source === 'demo' && !status?.ready ? 'demo' : 'live';
   const lockedFields = mode === 'demo';
-  const filteredRows = projectRows(snapshot, fields);
-  const relatedFields = related?.fields.filter((f) => relatedSelected.includes(f.id)) ?? [];
+  const filteredRows = useMemo(() => projectRows(snapshot, fields), [snapshot, fields]);
+  const relatedFields = useMemo(
+    () => related?.fields.filter((f) => relatedSelected.includes(f.id)) ?? [],
+    [related, relatedSelected],
+  );
   const primaryKeyField = fields.find((f) => f.id === primaryKey);
   const relatedKeyField = relatedFields.find((f) => f.id === relatedKey);
 
@@ -188,7 +188,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
     result?.id,
     tab,
     page,
-    pending,
+    pending?.id,
     error,
     selected,
     related,
@@ -197,6 +197,12 @@ export default function App({ preview = false }: { preview?: boolean }) {
     relatedKey,
     snapshot.viewId,
   ]);
+  // The resumable task ID is saved immediately; checkpoint streamed text at most once/second.
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setInterval(() => void persistCurrent(), 1000);
+    return () => clearInterval(timer);
+  }, [pending?.id, persistCurrent]);
   async function savedConversation(owner: ConversationScope | null, id: string) {
     if (!owner) return null;
     try {
@@ -270,7 +276,13 @@ export default function App({ preview = false }: { preview?: boolean }) {
 
   function receiveJob(job: AnalysisJob, started: PendingAnalysis, key: string | null) {
     if (key !== (session.current?.key ?? null)) return;
-    if (job.status === 'running') return;
+    if (job.status === 'running') {
+      if (job.progress)
+        setPending((current) =>
+          current?.id === started.id ? { ...current, progress: job.progress } : current,
+        );
+      return;
+    }
     if (job.status === 'succeeded') {
       const next = { ...job.result, sourceLoadedAt: started.sourceLoadedAt };
       setResult(next);
@@ -293,19 +305,41 @@ export default function App({ preview = false }: { preview?: boolean }) {
     const key = sessionKey;
     const startedAt = Date.now();
     let wake: ReturnType<typeof setTimeout>;
+    let streaming = true;
     const pause = (ms: number) =>
       new Promise<void>((resolve) => {
         wake = setTimeout(resolve, ms);
       });
     void (async () => {
       while (!controller.signal.aborted) {
+        if (streaming) {
+          try {
+            let finished = false;
+            await streamAnalysisJob(pending, token, controller.signal, (event) => {
+              if (key !== (session.current?.key ?? null)) return;
+              if (event.type === 'snapshot') {
+                receiveJob(event.job, pending, key);
+                finished = event.job.status !== 'running';
+              } else {
+                setPending((current) =>
+                  current?.id === pending.id
+                    ? { ...current, progress: applyAnalysisUpdate(current.progress, event.update) }
+                    : current,
+                );
+              }
+            });
+            if (finished || controller.signal.aborted) return;
+          } catch (failure) {
+            if (controller.signal.aborted) return;
+            if (failure instanceof AnalysisRequestError && [404, 405].includes(failure.status))
+              streaming = false;
+          }
+        }
         try {
           const job = await analysisJobRequest(pending, token, controller.signal);
           if (controller.signal.aborted) return;
-          if (job.status !== 'running') {
-            receiveJob(job, pending, key);
-            return;
-          }
+          receiveJob(job, pending, key);
+          if (job.status !== 'running') return;
           await pause(700);
         } catch (failure) {
           if (controller.signal.aborted) return;
@@ -1092,327 +1126,39 @@ export default function App({ preview = false }: { preview?: boolean }) {
                   </p>
                 </section>
               ) : (
-                <>
-                  <section className="composer-section">
-                    <div className="composer-label">
-                      <span className="spark-icon">
-                        <Sparkles size={17} />
-                      </span>
-                      <span>{preview ? '今天，想从数据中了解什么？' : '向数据表提问'}</span>
-                      {preview && (
-                        <span className="mode-label">
-                          {mode === 'demo' ? '预设分析' : 'AVA 智能分析'}
-                        </span>
-                      )}
-                    </div>
-                    <form
-                      className={`composer ${busy ? 'processing' : ''}`}
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        void analyze(question);
-                      }}
-                    >
-                      <textarea
-                        ref={textarea}
-                        aria-label="分析问题"
-                        placeholder={
-                          mode === 'demo'
-                            ? '试试：每个月的销售额趋势如何？'
-                            : '例如：找出销售额最高的地区，并比较各月份的变化…'
-                        }
-                        value={question}
-                        maxLength={2000}
-                        disabled={busy}
-                        onChange={(e) => setQuestion(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                            e.preventDefault();
-                            void analyze(question);
-                          }
-                        }}
-                      />
-                      <div className="composer-footer">
-                        <span>
-                          <Database size={13} />
-                          基于 {snapshot.tableName}
-                          {related ? ` + ${related.tableName}` : ''}
-                          <span className="composer-hint">· Enter 发送，Shift + Enter 换行</span>
-                        </span>
-                        <button
-                          className="send-button"
-                          type="submit"
-                          aria-label="开始分析"
-                          disabled={
-                            busy ||
-                            connecting ||
-                            !question.trim() ||
-                            !fields.length ||
-                            (snapshot.source === 'feishu' && !status?.ready)
-                          }
-                        >
-                          {busy ? (
-                            <LoaderCircle size={18} className="spin" />
-                          ) : (
-                            <ArrowUp size={19} />
-                          )}
-                        </button>
-                      </div>
-                    </form>
-                    <p className="data-disclosure">
-                      <ShieldCheck size={12} />
-                      {mode === 'demo'
-                        ? '演示查询在服务端使用 AVA 计算，不调用模型。'
-                        : '仅在提交问题时发送所选字段数据。模型可能接收字段、统计信息及查询结果。'}
-                    </p>
-                  </section>
-
-                  {busy && (
-                    <section className="card loading-card" role="status">
-                      <span className="loading-orbit">
-                        <Sparkles size={24} />
-                      </span>
-                      <div>
-                        <h3>正在寻找数据中的答案</h3>
-                        <p>
-                          AVA
-                          正在计算结果、整理结论并准备图表。切换页面后任务会继续，返回时自动恢复。
-                        </p>
-                      </div>
-                    </section>
-                  )}
-                  {result && !busy ? (
-                    <section className="card result-card" aria-label="分析结果">
-                      <div className="result-heading">
-                        <div className="result-brand">
-                          <span className="spark-icon">
-                            <Sparkles size={19} />
-                          </span>
-                          <div>
-                            <h2>{result.query}</h2>
-                            <span>
-                              AVA · {result.mode === 'demo' ? '演示分析' : '智能分析'}
-                              <i />
-                              {(result.elapsedMs / 1000).toFixed(1)} 秒 · {result.rowCount} 条源记录
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          className="button text-button"
-                          onClick={() => {
-                            exportReport(
-                              result,
-                              related
-                                ? `${snapshot.tableName} + ${related.tableName}`
-                                : snapshot.tableName,
-                            );
-                            setToast('分析报告已导出');
-                          }}
-                        >
-                          <ArrowDownToLine size={15} />
-                          导出报告
-                        </button>
-                      </div>
-                      <div className="insight-copy">
-                        <span className="insight-label">
-                          <span />
-                          分析发现
-                        </span>
-                        <ReactMarkdown
-                          components={{
-                            a: (props) => <a {...props} target="_blank" rel="noreferrer" />,
-                          }}
-                        >
-                          {result.text}
-                        </ReactMarkdown>
-                        {result.joinQuality && (
-                          <p className="table-note">
-                            关联键匹配：{result.joinQuality.matchedRows.toLocaleString()} /{' '}
-                            {result.joinQuality.primaryRows.toLocaleString()} 条主表记录 （
-                            {(
-                              (100 * result.joinQuality.matchedRows) /
-                              result.joinQuality.primaryRows
-                            ).toFixed(1)}
-                            %）。 主表空键 {result.joinQuality.primaryMissingKeys.toLocaleString()}{' '}
-                            条，关联表空键 {result.joinQuality.relatedMissingKeys.toLocaleString()}{' '}
-                            条。
-                          </p>
-                        )}
-                      </div>
-                      {result.chartWarning && (
-                        <p className="chart-warning">{result.chartWarning}</p>
-                      )}
-                      <div className="result-tabs">
-                        <div role="tablist" aria-label="结果视图">
-                          <button
-                            role="tab"
-                            aria-selected={tab === 'chart'}
-                            className={tab === 'chart' ? 'active' : ''}
-                            onClick={() => setTab('chart')}
-                          >
-                            <BarChart3 size={15} />
-                            可视化图表
-                          </button>
-                          <button
-                            role="tab"
-                            aria-selected={tab === 'data'}
-                            className={tab === 'data' ? 'active' : ''}
-                            onClick={() => setTab('data')}
-                          >
-                            <Table2 size={15} />
-                            计算结果<span>{result.data.length}</span>
-                          </button>
-                          <button
-                            role="tab"
-                            aria-selected={tab === 'sql'}
-                            className={tab === 'sql' ? 'active' : ''}
-                            onClick={() => setTab('sql')}
-                          >
-                            <FileText size={15} />
-                            查询依据
-                          </button>
-                        </div>
-                        <button
-                          className="icon-button"
-                          aria-label="导出计算结果 CSV"
-                          onClick={() =>
-                            download(
-                              'AVA-计算结果.csv',
-                              toCsv(result.data),
-                              'text/csv;charset=utf-8',
-                            )
-                          }
-                        >
-                          <ArrowDownToLine size={16} />
-                        </button>
-                      </div>
-                      <div className="result-content" role="tabpanel">
-                        {tab === 'chart' ? (
-                          <>
-                            <div className="chart-title">
-                              {typeof result.chart?.config.title === 'string'
-                                ? result.chart.config.title
-                                : '数据可视化'}
-                              <span>
-                                {result.chart?.config.axisYTitle
-                                  ? String(result.chart.config.axisYTitle)
-                                  : ''}
-                              </span>
-                            </div>
-                            <Suspense fallback={<div className="empty-table">正在加载图表…</div>}>
-                              <Chart result={result} />
-                            </Suspense>
-                          </>
-                        ) : tab === 'data' ? (
-                          <DataTable rows={result.data} />
-                        ) : (
-                          <>
-                            <p className="table-note">
-                              以下查询由 AVA 执行，结论基于返回结果。可在「计算结果」中交叉核对。
-                            </p>
-                            <pre className="sql-block">
-                              <code>{result.sql || '本次分析未返回 SQL。'}</code>
-                            </pre>
-                          </>
-                        )}
-                      </div>
-                      <div className="result-footnote">
-                        <ShieldCheck size={13} />
-                        <span>
-                          {result.sourceLoadedAt
-                            ? `分析基于 ${new Date(result.sourceLoadedAt).toLocaleString('zh-CN')} 的数据快照`
-                            : '分析基于提交时的数据快照'}
-                          {result.mode === 'live' ? '，请核对重要结论' : ' · 演示数据与预设查询'}。
-                        </span>
-                        <Check size={13} />
-                        已完成
-                      </div>
-                    </section>
-                  ) : (
-                    preview &&
-                    !busy && (
-                      <section className="explore-section">
-                        <div className="section-title">
-                          <div>
-                            <TrendingUp size={17} />
-                            <h2>从一个好问题开始</h2>
-                          </div>
-                          <span>探索数据的不同角度</span>
-                        </div>
-                        <div className="question-grid">
-                          {(snapshot.source === 'demo'
-                            ? DEMO_QUESTIONS
-                            : makeQuestions({ ...snapshot, fields })
-                          ).map((q, i) => (
-                            <button
-                              className="question-card"
-                              key={q}
-                              disabled={
-                                connecting || (snapshot.source === 'feishu' && !status?.ready)
-                              }
-                              onClick={() => {
-                                setQuestion(q);
-                                void analyze(q);
-                              }}
-                            >
-                              <span className={`question-icon tone-${i}`}>
-                                {i === 0 ? (
-                                  <TrendingUp size={19} />
-                                ) : i === 1 ? (
-                                  <BarChart3 size={19} />
-                                ) : i === 2 ? (
-                                  <Layers3 size={19} />
-                                ) : (
-                                  <Table2 size={19} />
-                                )}
-                              </span>
-                              <strong>{['发现趋势', '比较表现', '探索构成', '深入数据'][i]}</strong>
-                              <span>{q}</span>
-                              <ArrowRight className="question-arrow" size={16} />
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    )
-                  )}
-                  {history.length > 0 && !busy && (
-                    <div className="followup-row">
-                      <span>继续探索</span>
-                      {(snapshot.source === 'demo'
-                        ? DEMO_QUESTIONS
-                        : makeQuestions({ ...snapshot, fields })
-                      )
-                        .filter((q) => q !== result?.query)
-                        .slice(0, 2)
-                        .map((q) => (
-                          <button
-                            key={q}
-                            onClick={() => {
-                              setQuestion(q);
-                              void analyze(q);
-                            }}
-                          >
-                            {q}
-                            <ArrowRight size={13} />
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                  {preview && !result && !busy && (
-                    <div className="workflow-note">
-                      <span>
-                        <b>01</b>连接多维表格
-                      </span>
-                      <i />
-                      <span>
-                        <b>02</b>用自然语言提问
-                      </span>
-                      <i />
-                      <span>
-                        <b>03</b>发现洞察与图表
-                      </span>
-                    </div>
-                  )}
-                </>
+                <AnalyticsWorkspace
+                  snapshot={snapshot}
+                  relatedName={related?.tableName}
+                  mode={mode}
+                  pending={pending}
+                  result={result}
+                  history={history}
+                  question={question}
+                  onQuestion={setQuestion}
+                  onAnalyze={analyze}
+                  onSelect={(item) => {
+                    setResult(item);
+                    setTab(item.chart ? 'chart' : 'data');
+                  }}
+                  tab={tab}
+                  onTab={setTab}
+                  inputRef={textarea}
+                  disabled={
+                    connecting || !fields.length || (snapshot.source === 'feishu' && !status?.ready)
+                  }
+                  questions={
+                    snapshot.source === 'demo'
+                      ? [...DEMO_QUESTIONS]
+                      : makeQuestions({ ...snapshot, fields })
+                  }
+                  onExport={(item) => {
+                    exportReport(
+                      item,
+                      related ? `${snapshot.tableName} + ${related.tableName}` : snapshot.tableName,
+                    );
+                    setToast('分析报告已导出');
+                  }}
+                />
               )}
             </>
           )}

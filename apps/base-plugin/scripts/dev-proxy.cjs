@@ -7,7 +7,7 @@ module.exports = function developmentProxy(target, token, port) {
     return (
       analysisPaths.has(pathname) ||
       pathname === '/api/analysis-jobs' ||
-      /^\/api\/analysis-jobs\/[a-f0-9-]{36}$/.test(pathname)
+      /^\/api\/analysis-jobs\/[a-f0-9-]{36}(?:\/events)?$/.test(pathname)
     );
   };
   const origins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`]);

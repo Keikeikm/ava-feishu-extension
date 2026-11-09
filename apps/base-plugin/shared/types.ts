@@ -27,6 +27,7 @@ export interface AnalysisResult extends Pick<AnalysisResponse, 'query' | 'text' 
   id: string;
   chart: ChartSpec | null;
   chartHtml?: string;
+  chartSource?: 'ava' | 'computed';
   chartWarning?: string;
   rowCount: number;
   joinQuality?: JoinQuality;
@@ -34,20 +35,50 @@ export interface AnalysisResult extends Pick<AnalysisResponse, 'query' | 'text' 
   mode: 'demo' | 'live';
   createdAt: string;
   sourceLoadedAt?: string;
+  steps?: AnalysisStep[];
 }
+
+export interface AnalysisStep {
+  id: string;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  detail?: string;
+}
+export interface AnalysisProgress {
+  steps: AnalysisStep[];
+  text: string;
+  sql?: string;
+  data?: Record<string, unknown>[];
+  chart?: ChartSpec | null;
+  chartSource?: AnalysisResult['chartSource'];
+  chartHtml?: string;
+}
+export type AnalysisUpdate =
+  | { type: 'step'; step: AnalysisStep }
+  | { type: 'text'; delta: string }
+  | { type: 'query'; sql: string; data: Record<string, unknown>[] }
+  | {
+      type: 'chart';
+      chart: ChartSpec | null;
+      chartSource?: AnalysisResult['chartSource'];
+      chartHtml?: string;
+    };
+export type JobStreamEvent =
+  { type: 'snapshot'; job: AnalysisJob } | { type: 'update'; update: AnalysisUpdate };
 
 export interface PendingAnalysis {
   id: string;
   key: string;
+  progress?: AnalysisProgress;
   query: string;
   createdAt: string;
   sourceLoadedAt?: string;
 }
 
 export type AnalysisJob =
-  | { id: string; status: 'running' }
+  | { id: string; status: 'running'; progress?: AnalysisProgress }
   | { id: string; status: 'succeeded'; result: AnalysisResult }
-  | { id: string; status: 'failed'; error: string };
+  | { id: string; status: 'failed'; error: string; progress?: AnalysisProgress };
 
 export interface ServerStatus {
   ready: boolean;

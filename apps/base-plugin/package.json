@@ -29,17 +29,18 @@
     "doctor": "tsx --env-file-if-exists=.env scripts/doctor.mjs"
   },
   "dependencies": {
-    "@ava/analysis-core": "0.1.0",
     "@ai-sdk/openai": "^4.0.108",
     "@antv/ava": "4.0.0",
+    "@antv/gpt-vis": "^1.3.1",
+    "@ava/analysis-core": "0.1.0",
     "@lark-opdev/block-bitable-api": "^0.4.1-alpha.11",
+    "ai": "^7.0.112",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
-    "recharts": "^3.0.0",
     "tsx": "^4.20.0",
     "zod": "^4.6.7"
   },

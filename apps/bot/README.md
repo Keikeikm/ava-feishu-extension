@@ -34,7 +34,7 @@ sequenceDiagram
 
 ## 2. 配置并启动
 
-先完成[根目录安装](../../README.md#先体验)。**以下命令均在仓库根目录执行。**
+先完成[依赖安装](../../README.md#安装依赖)。**以下命令均在仓库根目录执行。**
 
 ```sh
 cp apps/bot/.env.example apps/bot/.env

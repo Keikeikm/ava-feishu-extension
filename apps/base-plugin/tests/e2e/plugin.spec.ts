@@ -5,7 +5,9 @@ test('完整演示：提问、图表、结果、SQL 和导出', async ({ page })
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('让数据，开口说话。');
   await page.getByRole('button', { name: /发现趋势/ }).click();
   await expect(page.getByRole('region', { name: '分析结果' })).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator('.recharts-line')).toBeVisible();
+  await expect(page.locator('.antv-chart[data-state="ready"] canvas')).toBeVisible({
+    timeout: 30_000,
+  });
   await expect(page.getByRole('tab', { name: '可视化图表' })).toHaveAttribute(
     'aria-selected',
     'true',
@@ -43,7 +45,9 @@ test('窄屏完成分析，无水平溢出', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await page.getByRole('button', { name: /比较表现/ }).click();
-  await expect(page.locator('.recharts-bar')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('.antv-chart[data-state="ready"] canvas')).toBeVisible({
+    timeout: 30_000,
+  });
   const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
   expect(fits).toBe(true);
 });
@@ -172,4 +176,57 @@ test('连接失败不会误报未配置模型，可一键重新检查', async ({
   await page.getByRole('dialog').getByRole('button', { name: '重新检查连接' }).click();
   await expect(page.getByText('模型已配置', { exact: true })).toBeVisible();
   await expect(page.getByText('connection-fixture', { exact: true })).toBeVisible();
+});
+
+test('分类概览未推荐图表时也能本地绘制，切换指标保留完整结果表', async ({ page }, testInfo) => {
+  const rows = [
+    { 类别: '点心', 记录数: 300, 金额合计: 74850, 金额均值: 249.5 },
+    { 类别: '果汁', 记录数: 300, 金额合计: 75750, 金额均值: 252.5 },
+    { 类别: '咖啡', 记录数: 300, 金额合计: 75150, 金额均值: 250.5 },
+    { 类别: '茶', 记录数: 300, 金额合计: 75050, 金额均值: 250.1667 },
+    { 类别: null, 记录数: 2, 金额合计: null, 金额均值: null },
+  ];
+  await page.route('**/api/analysis-jobs', (route) =>
+    route.fulfill({
+      json: {
+        id: route.request().postDataJSON().id,
+        status: 'succeeded',
+        result: {
+          id: 'old-overview',
+          query: '分析一下',
+          text: '按类别汇总结果。',
+          data: rows,
+          chart: null,
+          rowCount: 1202,
+          elapsedMs: 1,
+          mode: 'live',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      },
+    }),
+  );
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '分析问题' }).fill('分析一下');
+  await page.getByRole('button', { name: '开始分析', exact: true }).click();
+  await expect(page.getByRole('region', { name: '分析结果' })).toBeVisible();
+  await page.getByRole('tab', { name: '可视化图表', exact: true }).click();
+  await expect(page.locator('.antv-chart[data-state="ready"] canvas')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '图表指标', exact: true })).toHaveValue(
+    '金额合计',
+  );
+  await expect(page.getByText(/当前指标有 1 行空值/)).toBeVisible();
+  await page.getByRole('combobox', { name: '图表指标', exact: true }).selectOption('金额均值');
+  await expect(page.locator('.chart-title')).toContainText('金额均值');
+  await page
+    .getByRole('region', { name: '分析结果' })
+    .screenshot({ path: testInfo.outputPath('overview-chart.png') });
+  await page.getByRole('tab', { name: /计算结果/ }).click();
+  await expect(page.getByRole('columnheader', { name: '金额合计', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '74850', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('region', { name: '分析结果' })).toBeVisible();
+  await page.getByRole('tab', { name: '可视化图表', exact: true }).click();
+  await expect(page.locator('.antv-chart[data-state="ready"] canvas')).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

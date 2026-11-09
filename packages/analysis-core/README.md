@@ -34,7 +34,7 @@ flowchart LR
 
 ## 开发
 
-完成[根目录安装](../../README.md#先体验)后，在仓库根目录执行：
+完成[依赖安装](../../README.md#安装依赖)后，在仓库根目录执行：
 
 ```sh
 npm run build:core

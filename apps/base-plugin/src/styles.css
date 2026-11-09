@@ -1884,3 +1884,27 @@ td {
 .table-view-connection button {
   margin: 8px 8px 0 0;
 }
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: #89919f;
+}
+.chart-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.chart-controls select {
+  max-width: 220px;
+  padding: 6px 10px;
+  border: 1px solid #e2dff0;
+  border-radius: 6px;
+  color: #6653a5;
+  background: white;
+  font: inherit;
+}

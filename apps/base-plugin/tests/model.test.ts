@@ -29,7 +29,11 @@ describe('AVA 模型协议集成（本机兼容接口夹具）', () => {
           conclusion: '华东地区销售额最高。',
         });
       } else if (prompt.includes('图表推荐专家')) {
-        content = 'bar';
+        if (prompt.includes('模拟图表失败')) {
+          res.status(500).json({ error: { message: 'private-provider-detail' } });
+          return;
+        }
+        content = prompt.includes('分析一下') ? 'none' : 'bar';
       } else {
         content = JSON.stringify({
           type: 'bar',
@@ -59,9 +63,18 @@ describe('AVA 模型协议集成（本机兼容接口夹具）', () => {
       expect(result.data[0].category).toBe('华东');
       expect(result.text).toBe('华东地区销售额最高。');
       expect(result.chart?.chartType).toBe('bar');
-      expect(result.chartHtml).toContain('GPTVis');
+      expect(result.chartHtml).toBeUndefined();
       expect(prompts).toHaveLength(4);
       expect(result.mode).toBe('live');
+
+      for (const question of ['分析一下', '模拟图表失败']) {
+        const automatic = await runAnalysis(question, demoSnapshot, 'live', model);
+        expect(automatic.chartSource).toBe('computed');
+        expect(automatic.chart?.config.data).toEqual(automatic.data);
+        expect(automatic.chartHtml).toBeUndefined();
+        expect(automatic.chartWarning).toBeUndefined();
+        expect(automatic.text).not.toContain('private-provider-detail');
+      }
 
       const snapshot: Snapshot = {
         ...demoSnapshot,

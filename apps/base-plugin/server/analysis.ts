@@ -9,9 +9,19 @@ import {
   loadJsonSnapshots,
 } from '@ava/analysis-core';
 import { createOpenAI } from '@ai-sdk/openai';
-import type { AnalysisResult, Snapshot, ChartSpec, RelatedSnapshot } from '../shared/types';
+import type {
+  AnalysisResult,
+  Snapshot,
+  ChartSpec,
+  RelatedSnapshot,
+  AnalysisUpdate,
+  AnalysisStep,
+} from '../shared/types';
 import { demoSnapshot } from '../shared/demo';
 import { demoPlan, demoSummary } from './demo-analysis';
+import { streamSummary } from './stream-summary';
+import { computedChart } from '../shared/visualization';
+import { prepareGPTVisConfig } from '../shared/gpt-vis-config';
 
 export class JoinSelectionError extends Error {}
 
@@ -23,8 +33,21 @@ export async function runAnalysis(
   mode: 'demo' | 'live',
   model?: ModelConfig,
   related?: RelatedSnapshot,
+  onUpdate?: (update: AnalysisUpdate) => void,
 ): Promise<AnalysisResult> {
   const start = performance.now();
+  const steps: AnalysisStep[] = [];
+  const publish = (update: AnalysisUpdate) => {
+    onUpdate?.(update);
+  };
+  const step = (id: string, label: string, status: AnalysisStep['status'], detail?: string) => {
+    const value = { id, label, status, detail };
+    const index = steps.findIndex((item) => item.id === id);
+    if (index < 0) steps.push(value);
+    else steps[index] = value;
+    publish({ type: 'step', step: value });
+  };
+  step('source', '读取所选数据快照', 'running');
   // Demo always uses our own fixture, even if the client submits another snapshot.
   const source = mode === 'demo' ? demoSnapshot : snapshot;
   const plan = mode === 'demo' ? demoPlan(question) : null;
@@ -61,6 +84,12 @@ export async function runAnalysis(
         rows,
       })),
     );
+    step(
+      'source',
+      '读取所选数据快照',
+      'done',
+      `${snapshots.length} 张表 · ${snapshots.reduce((sum, data) => sum + data.rows.length, 0)} 条记录`,
+    );
     let relationship = '';
     let joinQuality: AnalysisResult['joinQuality'];
     if (related && mode === 'live') {
@@ -85,15 +114,35 @@ export async function runAnalysis(
       joinQuality = quality;
       relationship = `跨表时只使用已选关系。若要保留主表记录，使用 LEFT JOIN。关联条件：${condition}。主表 ${quality.primaryRows} 条，其中 ${quality.matchedRows} 条匹配，${quality.primaryMissingKeys} 条关联键为空。说明未匹配记录对统计口径的影响。\n`;
     }
+    // Subscribe only after import, so loader paths and intermediate source rows are not exposed.
+    ava.on('schemastart', () => step('profile', '检查结构与数据范围', 'running'));
+    ava.on('profileend', () => step('profile', '检查结构与数据范围', 'done'));
+    ava.on('translatestart', () => step('translate', '将问题转换为查询', 'running'));
+    ava.on('translateend', (event: { data?: { error?: unknown } }) =>
+      step('translate', '将问题转换为查询', event.data?.error ? 'error' : 'done'),
+    );
+    ava.on('querystart', () => step('query', '执行只读查询', 'running'));
+    ava.on('queryend', (event: { data?: { error?: unknown; data?: unknown[] } }) =>
+      step(
+        'query',
+        '执行只读查询',
+        event.data?.error ? 'error' : 'done',
+        event.data?.data ? `返回 ${event.data.data.length} 行` : undefined,
+      ),
+    );
     let data: Record<string, unknown>[], text: string, sql: string | undefined;
     let chart: ChartSpec | null = null,
       chartHtml: string | undefined,
       chartWarning: string | undefined;
+    let chartSource: AnalysisResult['chartSource'];
     if (plan) {
       const result = await ava.query(plan.sql);
       data = result.data;
       sql = plan.sql;
       text = demoSummary(data, plan.dimension, plan.metric);
+      publish({ type: 'query', sql, data });
+      step('summary', '整理分析结论', 'done');
+      publish({ type: 'text', delta: text });
       chart = {
         chartType: plan.chartType,
         config: {
@@ -107,22 +156,54 @@ export async function runAnalysis(
     } else {
       const result = await analyzeQuestion(ava, `${relationship}问题：${question}`, {
         maxRows: 1000,
+        ...(onUpdate ? { includeSummary: false } : {}),
       });
       data = result.data;
       text = result.text;
       sql = result.sql;
+      publish({ type: 'query', sql: sql || '', data });
+      if (onUpdate && languageModel) {
+        step('summary', '解读查询结果', 'running');
+        const summary = await streamSummary(
+          languageModel,
+          question,
+          sql || '',
+          { data, truncated: result.truncated },
+          publish,
+        );
+        text = summary.text;
+        step(
+          'summary',
+          '解读查询结果',
+          'done',
+          summary.streamed ? '文本已实时返回' : '模型按整段返回',
+        );
+      }
       if (result.truncated)
         text += '\n\n注意：计算结果达到返回上限，仅展示部分结果。请缩小问题范围后重新分析。';
+      step('chart', '生成可视化图表', 'running');
       try {
         const visual = await ava.visualize({ query: question, data });
         if (visual) {
           chart = { chartType: visual.chartType, config: visual.config };
-          chartHtml = visual.html;
+          // Clients render the typed config with the locally bundled AntV renderer.
+          chartSource = 'ava';
         }
       } catch {
         chartWarning = '图表暂未生成，分析结论和计算结果仍可查看。';
       }
     }
+    if (!prepareGPTVisConfig(chart)) {
+      const fallback = computedChart(data, question);
+      if (fallback) {
+        chart = fallback.chart;
+        chartSource = 'computed';
+        chartHtml = undefined;
+        chartWarning = undefined;
+      }
+    }
+    step('chart', '生成可视化图表', 'done', chart ? '图表配置已生成' : '结果适合数据表查看');
+    publish({ type: 'chart', chart, chartSource, chartHtml });
     return {
       id: randomUUID(),
       query: question,
@@ -131,9 +212,11 @@ export async function runAnalysis(
       data,
       chart,
       chartHtml,
+      chartSource,
       chartWarning,
       rowCount: source.rows.length,
       joinQuality,
+      steps,
       elapsedMs: Math.round(performance.now() - start),
       mode,
       createdAt: new Date().toISOString(),

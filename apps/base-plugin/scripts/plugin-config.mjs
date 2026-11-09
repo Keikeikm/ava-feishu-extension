@@ -45,18 +45,25 @@ export function validateConfig({ app, block, runtime }, publish = false) {
   }
   return errors;
 }
-export async function configureConfig(args) {
-  const config = await readConfig();
+export function applyConfigArgs(current, args) {
+  const config = structuredClone(current);
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i],
       value = args[i + 1];
     if (!value) throw new Error(`缺少 ${key} 的值`);
     if (key === '--app-id') config.app.appId = value;
     else if (key === '--block-type-id') config.block.blockTypeID = value;
-    else if (key === '--base-url') config.block.url = value;
+    else if (key === '--name') {
+      if (!value.trim() || value.trim().length > 80) throw new Error('插件名称需为 1–80 个字符');
+      config.block.projectName = value.trim();
+    } else if (key === '--base-url') config.block.url = value;
     else if (key === '--api-origin') config.runtime.apiOrigin = value.replace(/\/$/, '');
     else throw new Error(`未知参数：${key}`);
   }
+  return config;
+}
+export async function configureConfig(args) {
+  const config = applyConfigArgs(await readConfig(), args);
   const errors = validateConfig(config);
   if (errors.length) throw new Error(errors.join('\n'));
   await Promise.all(
