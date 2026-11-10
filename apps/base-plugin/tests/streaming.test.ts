@@ -238,3 +238,61 @@ it('真实 AVA 查询后解读模型以 token 流返回，首段提前出现，�
   expect(result.steps?.every((step) => step.status === 'done')).toBe(true);
   expect(JSON.stringify(updates)).not.toContain('PRIVATE_REASONING');
 });
+
+it('模型流式和普通解读均失败时，仍返回已执行的 SQL、数据和图表', async (context) => {
+  const provider = express();
+  provider.use(express.json());
+  const summaryRequests: { stream: boolean; system: string | undefined }[] = [];
+  provider.post('/v1/chat/completions', (req, res) => {
+    const messages: { role: string; content: string }[] = req.body.messages;
+    const prompt = messages.map((message) => message.content).join('\n');
+    if (prompt.includes('实际查询结果：')) {
+      summaryRequests.push({
+        stream: req.body.stream === true,
+        system: messages.find((message) => message.role === 'system')?.content,
+      });
+      res.status(503).json({ error: { message: 'private-provider-error', type: 'server_error' } });
+      return;
+    }
+    const content = prompt.includes('SQL expert')
+      ? 'SELECT "地区" AS category, SUM("销售额") AS value FROM data GROUP BY "地区"'
+      : 'none';
+    res.json({
+      id: 'fixture',
+      object: 'chat.completion',
+      created: 1,
+      model: 'fixture',
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+  });
+  const server = provider.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  context.onTestFinished(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const updates: AnalysisUpdate[] = [];
+  const result = await runAnalysis(
+    '按地区汇总销售额',
+    demoSnapshot,
+    'live',
+    {
+      model: 'fixture',
+      apiKey: 'fixture-only',
+      baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+    },
+    undefined,
+    (update) => updates.push(update),
+  );
+  expect(summaryRequests.map(({ stream }) => stream)).toEqual([true, false]);
+  expect(summaryRequests[0].system).toContain('右侧结果栏负责展示图表、SQL 和完整数据表');
+  expect(summaryRequests[0].system).toContain('省略绘图能力说明、图表配置、SQL、Markdown 表格');
+  expect(summaryRequests[1].system).toBe(summaryRequests[0].system);
+  expect(result.sql).toContain('SELECT');
+  expect(result.data).toHaveLength(4);
+  expect(result.chart).not.toBeNull();
+  expect(result.text).toContain('查询已完成');
+  expect(result.steps?.find((step) => step.id === 'summary')?.status).toBe('error');
+  expect(JSON.stringify({ result, updates })).not.toContain('private-provider-error');
+});

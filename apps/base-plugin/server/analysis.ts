@@ -164,20 +164,25 @@ export async function runAnalysis(
       publish({ type: 'query', sql: sql || '', data });
       if (onUpdate && languageModel) {
         step('summary', '解读查询结果', 'running');
-        const summary = await streamSummary(
-          languageModel,
-          question,
-          sql || '',
-          { data, truncated: result.truncated },
-          publish,
-        );
-        text = summary.text;
-        step(
-          'summary',
-          '解读查询结果',
-          'done',
-          summary.streamed ? '文本已实时返回' : '模型按整段返回',
-        );
+        try {
+          const summary = await streamSummary(
+            languageModel,
+            question,
+            sql || '',
+            { data, truncated: result.truncated },
+            publish,
+          );
+          text = summary.text;
+          step(
+            'summary',
+            '解读查询结果',
+            'done',
+            summary.streamed ? '文本已实时返回' : '模型按整段返回',
+          );
+        } catch {
+          text = `查询已完成，返回 ${data.length} 行。模型未能完成解读，可在「数据」和「SQL」中核对计算结果。`;
+          step('summary', '解读查询结果', 'error', '模型解读未完成，已保留计算结果');
+        }
       }
       if (result.truncated)
         text += '\n\n注意：计算结果达到返回上限，仅展示部分结果。请缩小问题范围后重新分析。';
