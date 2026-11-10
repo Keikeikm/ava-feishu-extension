@@ -11,9 +11,15 @@ describe('分析 HTTP 服务', () => {
     const preflight = await request(app)
       .options('/api/analyze')
       .set('Origin', 'https://plugin.example.test')
-      .set('Access-Control-Request-Headers', 'authorization,content-type');
+      .set(
+        'Access-Control-Request-Headers',
+        'authorization,content-type,ngrok-skip-browser-warning',
+      );
     expect(preflight.status).toBe(204);
     expect(preflight.headers['access-control-allow-origin']).toBe('https://plugin.example.test');
+    expect(preflight.headers['access-control-allow-headers']).toContain(
+      'ngrok-skip-browser-warning',
+    );
     const result = await request(app)
       .post('/api/analyze')
       .set('Origin', 'https://plugin.example.test')

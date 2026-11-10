@@ -17,7 +17,7 @@ export interface SourceSettings {
   };
 }
 export interface Conversation {
-  version: 1;
+  version: 1 | 2;
   question: string;
   history: AnalysisResult[];
   resultId?: string;
@@ -51,7 +51,10 @@ export async function readConversation(key: string): Promise<Conversation | null
   return new Promise((resolve, reject) => {
     const transaction = db.transaction('sessions', 'readonly');
     const request = transaction.objectStore('sessions').get(key);
-    transaction.oncomplete = () => resolve(request.result?.version === 1 ? request.result : null);
+    transaction.oncomplete = () => {
+      const value = request.result;
+      resolve(value?.version === 1 || value?.version === 2 ? value : null);
+    };
     transaction.onerror = () => reject(transaction.error);
     transaction.onabort = () => reject(transaction.error);
   });

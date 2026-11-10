@@ -10,19 +10,29 @@ export async function readConfig() {
     runtime: await read('plugin/runtime.config.json'),
   };
 }
+export function parseDebugTableUrl(value) {
+  const url = URL.parse(value);
+  if (
+    !url ||
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.port ||
+    !/\.(feishu\.cn|larksuite\.com)$/.test(url.hostname) ||
+    !/^\/(base|wiki)\/[A-Za-z0-9]+\/?$/.test(url.pathname)
+  ) {
+    throw new Error('请提供有效的飞书 /base/ 或 /wiki/ 多维表格链接。');
+  }
+  return url;
+}
+
 export function validateConfig({ app, block, runtime }, publish = false) {
   const errors = [];
   if (!/^cli_[a-zA-Z0-9]+$/.test(app.appId)) errors.push('缺少真实 App ID（cli_...）');
   if (!/^blk_[a-zA-Z0-9]+$/.test(block.blockTypeID))
     errors.push('缺少数据表视图能力的 BlockTypeID（blk_...）');
   try {
-    const url = new URL(block.url);
-    if (
-      url.protocol !== 'https:' ||
-      !/\.(feishu\.cn|larksuite\.com)$/.test(url.hostname) ||
-      !/\/(base|wiki)\//.test(url.pathname)
-    )
-      throw new Error();
+    parseDebugTableUrl(block.url);
   } catch {
     errors.push('缺少有效的飞书多维表格调试链接');
   }

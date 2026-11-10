@@ -82,7 +82,7 @@ export function AnalyticsWorkspace({
   history: AnalysisResult[];
   question: string;
   onQuestion: (value: string) => void;
-  onAnalyze: (question: string) => void;
+  onAnalyze: (question: string, consumeDraft?: boolean) => void;
   onSelect: (result: AnalysisResult) => void;
   tab: Tab;
   onTab: (tab: Tab) => void;
@@ -122,9 +122,10 @@ export function AnalyticsWorkspace({
     .split(/\n\s*\n/)[0]
     .replace(/^#+\s*/, '')
     .slice(0, 280);
-  const submit = (value: string) => {
+  const submit = (value: string, consumeDraft = false) => {
+    if (busy || disabled) return;
     follow.current = true;
-    onAnalyze(value);
+    onAnalyze(value, consumeDraft);
   };
   return (
     <section className="analytics-workspace" aria-label="AVA 分析工作台">
@@ -208,10 +209,7 @@ export function AnalyticsWorkspace({
                   <button
                     key={value}
                     disabled={disabled}
-                    onClick={() => {
-                      onQuestion(value);
-                      submit(value);
-                    }}
+                    onClick={() => submit(value)}
                   >
                     <span>{['发现趋势', '比较表现', '探索构成', '深入数据'][index]}</span>
                     {value}
@@ -225,21 +223,20 @@ export function AnalyticsWorkspace({
           className="analytics-composer"
           onSubmit={(event) => {
             event.preventDefault();
-            submit(question);
+            submit(question, true);
           }}
         >
           <textarea
             ref={inputRef}
             aria-label="分析问题"
-            placeholder="说说你想分析什么…"
+            placeholder={busy ? '分析中，可以先写下一个问题…' : '说说你想分析什么…'}
             value={question}
             maxLength={2000}
-            disabled={busy}
             onChange={(event) => onQuestion(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                submit(question);
+                submit(question, true);
               }
             }}
           />

@@ -1,107 +1,81 @@
-[项目首页](../../README.md) / 飞书视图插件
+[项目首页](../../README.md) / 多维表格插件
 
-# 在多维表格中分析数据
+# AVA 数据洞察
 
-选择数据范围与字段，用中文提问，查看图表、计算结果和 SQL，并导出 CSV 或 Markdown 报告。
+在飞书多维表格中选择数据范围和字段，用中文提问。左侧实时显示分析过程，右侧展示摘要、查询结果、SQL 与 AntV 图表，可导出 CSV 和 Markdown 报告。
 
-## 1. 配置分析服务
+![AVA 分析工作台，左侧是分析对话，右侧是收入与毛利率双轴图](docs/analysis.png)
 
-先完成[依赖安装](../../README.md#安装依赖)。**以下命令均在仓库根目录执行。**
+_界面示例使用测试数据。_
 
-```sh
-cp apps/base-plugin/.env.example apps/base-plugin/.env
-```
+## 本地调试
 
-编辑 `apps/base-plugin/.env`：
+先完成[依赖安装](../../README.md#安装依赖)。以下命令均在仓库根目录执行。
 
-| 变量                       | 填写内容                                                 |
-| -------------------------- | -------------------------------------------------------- |
-| `AVA_API_KEY`、`AVA_MODEL` | 模型密钥与名称，分析飞书数据必填                         |
-| `AVA_BASE_URL`             | 可选的 OpenAI 兼容接口地址，不含 `/chat/completions`     |
-| `PLUGIN_ACCESS_TOKEN`      | 正式部署时的服务令牌；本地调试由脚本自动生成和管理       |
-| `PLUGIN_ALLOWED_ORIGINS`   | 正式部署时填写插件 frame 的实际 origin；本地调试自动配置 |
+1. 创建配置文件，在 `apps/base-plugin/.env` 填写 `AVA_API_KEY` 和 `AVA_MODEL`。使用自定义模型服务时，按供应商要求填写 `AVA_BASE_URL`。
 
-本地只需填写模型配置，无需手动生成或在插件中粘贴令牌。模型密钥与调试凭证都保留在服务端。正式部署仍需配置服务令牌或接入组织身份认证。
+   ```sh
+   cp -n apps/base-plugin/.env.example apps/base-plugin/.env
+   ```
 
-## 2. 绑定飞书并调试
+2. 创建飞书自建应用，添加 **「多维表格插件 → 数据表视图」**，取得 App ID 和该能力的 BlockTypeID。将命令中的示例 ID 与 Base 链接替换成自己的值。 [飞书开发者后台](https://open.feishu.cn/app) · [数据表视图开发指南](https://open.feishu.cn/document/base-extensions/base-table-view-extension-development-guide)
 
-在[飞书开放平台](https://open.feishu.cn/app)创建应用，添加「多维表格插件 → 数据表视图」能力，取得 **App ID、BlockTypeID**，并准备测试表链接。权限配置参照[数据表视图开发指南](https://open.feishu.cn/document/base-extensions/base-table-view-extension-development-guide)。
+   ```sh
+   npm run plugin:configure -w @ava/base-plugin -- \
+     --app-id cli_YourAppId \
+     --block-type-id blk_YourTableViewId \
+     --base-url 'https://example.feishu.cn/base/YourBaseToken'
 
-```sh
-npm run plugin:configure -w @ava/base-plugin -- \
-  --app-id cli_你的AppID \
-  --block-type-id blk_你的BlockTypeID \
-  --base-url 'https://你的租户.feishu.cn/base/你的表格token' \
-  --api-origin http://127.0.0.1:3001
+   npm exec -w @ava/base-plugin -- opdev login
+   npm run dev:plugin
+   ```
 
-npm exec -w @ava/base-plugin -- opdev login
-npm run dev:plugin
-```
+3. 打开终端打印的调试链接，在表格顶部点 **「+ → 添加更多插件」**，添加 AVA。启动脚本会自动选择空闲端口、加入 `debugPort` 并处理调试认证。
 
-绑定信息写入本模块的 `app.json`、`plugin/block.json` 和 `plugin/runtime.config.json`。在打开的测试表中，通过「＋ → 更多插件」添加本地 AVA 视图。
+换一份表调试时，运行 `npm run doctor:plugin -- --url '<表格链接>'` 获取对应链接。加 `--stream` 可用内置数据检查模型的流式输出。
 
-启动时从 **8080**（调试服务）和 **3001**（分析 API）开始自动寻找空闲端口，同步设置调试链接、API 地址和来源白名单，并打印实际地址。`FEISHU_DEBUG_PORT` 和 `PORT` 可指定查找的起始端口。本地开发不会改写生产配置；端口变化后刷新整个飞书页面，再打开插件视图。
+## 从普通表格链接添加
 
-遇到连接问题，在另一个终端运行诊断。它会检查飞书插件注册、App ID / BlockTypeID、视图入口和自动认证；加 `--model` 会用三条内置数字数据检查真实模型和 SQL 流程：
+发布后的视图由飞书托管。分析 API 可以留在 Mac 上，通过固定 HTTPS 隧道提供服务，也可以部署到服务器。
 
-```sh
-npm run doctor:plugin
-npm run doctor:plugin -- --model
-npm run doctor:plugin -- --stream
-```
+1. **启动分析 API。** 在 `apps/base-plugin/.env` 设置 `PLUGIN_ACCESS_TOKEN`，可用 `openssl rand -hex 32` 生成。在 `PLUGIN_ALLOWED_ORIGINS` 填写插件页面的实际来源，例如 `https://blk_YourTableViewId.feishupkg.com`。本机运行时使用 `HOST=127.0.0.1`。
 
-页面会区分「服务未连接」和「未配置模型」，支持重新检查，并自动重试连接。
+   ```sh
+   npm run build:core
+   npm start -w @ava/base-plugin
+   ```
 
-本地添加菜单的名称取自 `plugin/block.json` 的 `projectName`。修改后重启调试并刷新飞书页面：
+   使用 ngrok 时，将固定 HTTPS 地址转发到 API 的实际端口，例如 `ngrok http http://127.0.0.1:3001 --inspect=false`。使用插件时保持 API 和隧道运行。 [ngrok 固定域名说明](https://ngrok.com/docs/gateway/domains)
 
-```sh
-npm run plugin:configure -w @ava/base-plugin -- --name 'AVA 数据洞察'
-```
+2. **绑定 HTTPS 地址并上传视图包。** 将示例地址换成分析 API 的 HTTPS 地址，只填协议和主机名。把同一地址填入飞书后台的「服务器域名白名单」。
 
-正式发布的插件名称需在飞书开放平台修改并发布；已有视图标签可在视图菜单中单独重命名。
+   ```sh
+   npm run plugin:configure -w @ava/base-plugin -- --api-origin https://ava.example.com
+   npm run plugin:upload -w @ava/base-plugin
+   ```
 
-## 3. 选择数据并提问
+3. **发布并添加视图。** 在「多维表格数据表视图」选择上传的组件版本并保存，再到「版本管理与发布」提交应用版本。仅自己使用时，可用范围只选本人。发布后用普通链接打开可编辑的表格，通过「+ → 添加更多插件」添加 AVA。 [飞书数据表视图发布指南](https://open.feishu.cn/document/base-extensions/base-table-view-extension-development-guide)
 
-1. **确认范围**：用「数据范围」选择主表及源视图；用「选择字段」勾选要分析的列。
-2. **需要跨表时**：点击「添加关联表」，选择另一张表及源视图，再指定两侧关联字段。例如订单的「客户号」关联客户的「编号」。
-3. **提问并核对**：如「按客户地区汇总订单金额」。查看图表、结果及 SQL，按需导出。分类汇总会自动绘图，多指标结果可切换图表指标；单个数值或明细结果保留数据表展示。
+4. **连接一次。** 在「连接设置」输入服务访问令牌，勾选「在此浏览器记住令牌」，再应用设置。此后同一浏览器、同一飞书账号可在其他表格自动连接。取消勾选并应用设置可清除保存的令牌。
 
-关联字段需类型相同，关联表的键值需唯一；重复键或零匹配会被拒绝，结果中会显示匹配率。隐藏字段和未勾选字段不会提交给分析服务。
+如果菜单没有 AVA，检查已发布的应用版本是否包含**数据表视图**能力，以及当前账号是否在可用范围内。若视图能打开但连不上分析服务，检查 HTTPS 地址、飞书的服务器域名白名单及 API 的 `PLUGIN_ALLOWED_ORIGINS`。
 
-原表更新后点击「刷新数据」。每次提问独立分析，需写明完整问题。
+## 分析数据
 
-界面参考 [AVA 官网](https://ava.antv.vision/zh/)：左侧查看对话与真实分析步骤，右侧切换摘要、数据、SQL 和图表。解读通过 SSE 实时返回，全部图表统一由本地打包的 AntV `@antv/gpt-vis` 绘制，支持双轴图；模型不支持流式时兼容整段返回。`doctor:plugin -- --stream` 可用内置数据验证当前模型的分段输出。
+1. 在「数据范围」选择主表和源视图，在「选择字段」勾选要分析的列。
+2. 需要跨表时，点「添加关联表」并指定关联键。两侧字段类型须一致，关联表的键须唯一。AVA 会检查匹配率。
+3. 提问，例如「按客户地区汇总订单金额」。在结果栏查看图表、数据和 SQL，按需导出。原表有更新时点「刷新数据」。每次提问独立分析，请写明完整问题。
 
-草稿、最近 **10 次分析**与选表、字段、关联设置自动保存在当前浏览器，按用户、Base、插件视图和数据表隔离；切换表格、窗口或刷新后恢复。用「分析记录」查看历史，「清空对话」删除当前表的记录。完整源表和服务密钥不会写入会话缓存；记录不跨设备同步。
+草稿和最近 10 次分析按飞书账号、Base、插件视图和数据表保存在当前浏览器。切换页面后，可以回来查看历史或取回后台任务结果。已完成的任务最多保留 1 小时，分析服务重启后，未取回的任务需重新提交。
 
-提交成功的分析在后台继续，返回插件后自动获取结果。后台结果最多保留 **1 小时**（容量上限 50 个任务）；分析服务重启后需重新提交未取回的任务，已保存的历史仍保留。
+所选表合计最多 10,000 条记录，每表最多 80 个字段，请求上限 8 MB，计算结果最多返回 1,000 行。只提交所选字段，模型服务可能接收问题、数据结构、统计信息和查询结果。
 
-## 4. 部署与发布
-
-**分析 API 与飞书视图包分别部署。** 先准备可访问的 HTTPS API，配置飞书的服务器域名白名单，以及服务端的插件 origin 和令牌。
-
-在服务器上构建并启动分析服务；对外监听时在 `.env` 中设置 `HOST=0.0.0.0` 和服务令牌：
-
-```sh
-npm run build:plugin
-npm start -w @ava/base-plugin
-```
-
-保持服务运行，在本地发布终端将生产 API 地址写入视图包，再上传：
-
-```sh
-npm run plugin:configure -w @ava/base-plugin -- --api-origin https://ava.example.com
-npm run plugin:upload -w @ava/base-plugin
-```
-
-将示例域名替换为真实地址。上传后，在飞书开放平台选择插件版本并完成应用发布。视图包输出到 `apps/base-plugin/plugin/dist/`。
-
-分析服务也可用 Docker 运行：
+## Docker 部署分析 API
 
 ```sh
 docker build -f apps/base-plugin/Dockerfile -t ava-base-plugin .
 docker run --rm --env-file apps/base-plugin/.env \
-  -e HOST=0.0.0.0 -p 3001:3001 ava-base-plugin
+  -e HOST=0.0.0.0 -p 127.0.0.1:3001:3001 ava-base-plugin
 ```
 
-**范围限制**：所选表合计最多 10,000 条记录，每表 80 个字段，请求 8 MB；计算结果最多返回 1,000 条。源数据超限会拒绝，结果截断会提示。反向代理应支持至少 8 MB 正文和 150 秒请求时限；对 `/api/analysis-jobs/*/events` 关闭响应缓冲和缓存，允许 SSE 长连接。
+如果在前面接反向代理，配置 HTTPS、允许 8 MB 请求体和至少 150 秒的连接时限，并关闭 `/api/analysis-jobs/*/events` 的响应缓冲和缓存。

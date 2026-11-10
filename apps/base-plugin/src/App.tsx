@@ -112,6 +112,13 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [tab, setTab] = useState<'chart' | 'data' | 'sql'>('chart');
   const [token, setToken] = useState('');
+  const [tokenStorageKey, setTokenStorageKey] = useState('');
+  const [tokenRemembered, setTokenRemembered] = useState(false);
+  const [connectionDraft, setConnectionDraft] = useState<{
+    token: string;
+    remember: boolean;
+  } | null>(null);
+  const connectionSettings = connectionDraft ?? { token, remember: tokenRemembered };
   const [tables, setTables] = useState<Meta[]>([]);
   const [views, setViews] = useState<Meta[]>([]);
   const [tableId, setTableId] = useState('');
@@ -122,6 +129,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
   const [toast, setToast] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
   const request = useRef<AbortController | null>(null);
+  const statusRequest = useRef<AbortController | null>(null);
   const sourceRequest = useRef(0);
   const fields = useMemo(
     () => snapshot.fields.filter((f) => selected.includes(f.id)),
@@ -142,7 +150,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
       ? {
           key: sessionKey,
           value: {
-            version: 1,
+            version: 2,
             question,
             history,
             resultId: result?.id,
@@ -253,7 +261,10 @@ export default function App({ preview = false }: { preview?: boolean }) {
     );
     setPrimaryKey(linked?.primaryKey || '');
     setRelatedKey(linked?.relatedKey || '');
-    setQuestion(saved?.question || '');
+    const restoredPending = canRestore ? saved!.pending : null;
+    const draft = saved?.question ?? '';
+    // Older sessions stored the submitted question in both the draft and the task.
+    setQuestion(saved?.version === 1 && draft.trim() === restoredPending?.query ? '' : draft);
     const previous = canRestore ? saved!.history : [];
     setHistory(previous);
     const chosen = previous.find((item) => item.id === saved?.resultId) || previous[0] || null;
@@ -261,8 +272,8 @@ export default function App({ preview = false }: { preview?: boolean }) {
     setTab(saved?.tab || (chosen?.chart ? 'chart' : 'data'));
     setPage(saved?.page || 'analysis');
     setError(canRestore ? saved!.error : '');
-    setPending(canRestore ? saved!.pending : null);
-    setSubmitted(!!(canRestore && saved!.pending));
+    setPending(restoredPending);
+    setSubmitted(!!restoredPending);
     setScope(owner);
     setSessionKey(owner ? conversationKey(owner, data.tableId) : null);
     if (owner) {
@@ -290,10 +301,10 @@ export default function App({ preview = false }: { preview?: boolean }) {
         [next, ...previous.filter((item) => item.id !== next.id)].slice(0, 10),
       );
       setTab(next.chart ? 'chart' : 'data');
-      setQuestion('');
       setError('');
     } else {
       setError(job.error);
+      setQuestion((draft) => (draft.trim() ? draft : started.query));
     }
     setPending(null);
     setSubmitted(false);
@@ -361,41 +372,71 @@ export default function App({ preview = false }: { preview?: boolean }) {
     };
   }, [pending?.id, submitted, sessionKey, token]);
 
-  const refreshStatus = useCallback(async (accessToken = '', signal?: AbortSignal) => {
+  const refreshStatus = useCallback(async (accessToken = '', onRejected?: () => void) => {
+    statusRequest.current?.abort();
+    const controller = new AbortController();
+    statusRequest.current = controller;
+    const { signal } = controller;
     setStatusLoading(true);
     try {
       const next = await fetchServerStatus(accessToken, signal);
-      if (signal?.aborted) return null;
+      if (signal.aborted) return null;
       setStatus(next);
       setStatusError('');
       return next;
     } catch (failure) {
-      if (signal?.aborted) return null;
-      setStatus(null);
+      if (signal.aborted) return null;
+      if (failure instanceof AnalysisRequestError && failure.status === 401) onRejected?.();
+      else setStatus(null);
       setStatusError(
         failure instanceof TypeError
-          ? '无法连接分析服务，请确认本次调试已启动，并刷新整个飞书页面。'
+          ? automaticConnection
+            ? '无法连接分析服务，请确认本次调试已启动，并刷新整个飞书页面。'
+            : '无法连接分析服务，请确认服务在线后重新检查。'
           : failure instanceof Error
             ? failure.message
             : '分析服务连接失败。',
       );
       return null;
     } finally {
-      if (!signal?.aborted) setStatusLoading(false);
+      if (statusRequest.current === controller) {
+        statusRequest.current = null;
+        setStatusLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void refreshStatus('', controller.signal);
-    const timer = setInterval(() => void refreshStatus('', controller.signal), 15_000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
+    const check = () =>
+      refreshStatus(token, () => {
+        if (!token || automaticConnection) return;
+        if (tokenStorageKey) {
+          try {
+            if (localStorage.getItem(tokenStorageKey) === token)
+              localStorage.removeItem(tokenStorageKey);
+          } catch {
+            // Browser storage may be unavailable in an embedded view.
+          }
+        }
+        setToken('');
+        setTokenRemembered(false);
+        setToast('服务访问令牌已失效，请重新填写');
+      });
+    void check();
+    const timer = setInterval(() => {
+      if (!statusRequest.current) void check();
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [refreshStatus, token, tokenStorageKey]);
+  useEffect(
+    () => () => {
+      const current = statusRequest.current;
+      statusRequest.current = null;
+      current?.abort();
       request.current?.abort();
-      sourceRequest.current++;
-    };
-  }, [refreshStatus]);
+    },
+    [],
+  );
   useEffect(() => {
     const version = ++sourceRequest.current;
     setConnecting(true);
@@ -412,6 +453,20 @@ export default function App({ preview = false }: { preview?: boolean }) {
           return;
         }
         const connection = await timeout(connectFeishu());
+        if (version !== sourceRequest.current) return;
+        if (!automaticConnection && connection.userId) {
+          const key = `ava-service-token:${JSON.stringify([apiOrigin || location.origin, connection.userId])}`;
+          setTokenStorageKey(key);
+          try {
+            const savedToken = localStorage.getItem(key)?.trim() || '';
+            if (savedToken) {
+              setToken(savedToken);
+              setTokenRemembered(true);
+            }
+          } catch {
+            // The user can still connect for the current view.
+          }
+        }
         const configured = await timeout(readViewConfig()).catch(() => null);
         const active = connection.scope
           ? await readActiveSource(connection.scope).catch(() => undefined)
@@ -478,6 +533,36 @@ export default function App({ preview = false }: { preview?: boolean }) {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  function openConnectionSettings() {
+    setConnectionDraft(null);
+    setDialog('settings');
+  }
+
+  async function applyConnectionSettings() {
+    const nextToken = connectionSettings.token.trim();
+    const next = await refreshStatus(nextToken);
+    if (!next || (!automaticConnection && next.authRequired && !nextToken)) return;
+    let remembered = false;
+    let message = '连接检查通过';
+    if (tokenStorageKey) {
+      try {
+        if (connectionSettings.remember && next.authRequired) {
+          localStorage.setItem(tokenStorageKey, nextToken);
+          remembered = true;
+          message = '已在此浏览器记住令牌';
+        } else {
+          localStorage.removeItem(tokenStorageKey);
+        }
+      } catch {
+        message = '浏览器无法更新已保存的令牌，本次连接已通过';
+      }
+    }
+    setToken(nextToken);
+    setTokenRemembered(remembered);
+    setDialog(null);
+    setToast(message);
+  }
 
   async function clearConversation() {
     if (clearing || busy) return;
@@ -600,7 +685,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
       if (version === sourceRequest.current) setConnecting(false);
     }
   }
-  async function analyze(query: string) {
+  async function analyze(query: string, consumeDraft = false) {
     if (busy || connecting) return;
     if (!preview && !snapshot.tableId) return;
     if (snapshot.source === 'feishu' && !status?.ready) {
@@ -608,7 +693,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
       return;
     }
     if (!automaticConnection && !preview && status?.authRequired && !token.trim()) {
-      setDialog('settings');
+      openConnectionSettings();
       return;
     }
     if (!query.trim()) {
@@ -638,6 +723,8 @@ export default function App({ preview = false }: { preview?: boolean }) {
       createdAt: new Date().toISOString(),
       sourceLoadedAt: snapshot.loadedAt,
     };
+    const nextDraft = consumeDraft ? '' : question;
+    setQuestion(nextDraft);
     setPending(started);
     setSubmitted(false);
     setError('');
@@ -651,7 +738,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
         await writeConversation(current.key, {
           ...current.value,
           pending: started,
-          question: query.trim(),
+          question: nextDraft,
           error: '',
         });
       } catch {
@@ -661,7 +748,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
     if (controller.signal.aborted) return;
     try {
       const job = await analysisJobRequest(started, token, controller.signal, {
-        question: query.trim(),
+        question: started.query,
         mode,
         snapshot: { ...snapshot, fields, rows: filteredRows },
         ...(related
@@ -869,11 +956,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 独立页面预览
               </span>
             )}
-            <button
-              className="icon-button"
-              aria-label="连接设置"
-              onClick={() => setDialog('settings')}
-            >
+            <button className="icon-button" aria-label="连接设置" onClick={openConnectionSettings}>
               <Settings2 size={18} />
             </button>
           </div>
@@ -1033,7 +1116,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 <div className="notice">
                   <Settings2 size={16} />
                   数据已连接，配置服务端模型后即可自由提问。
-                  <button onClick={() => setDialog('settings')}>查看设置</button>
+                  <button onClick={openConnectionSettings}>查看设置</button>
                 </div>
               )}
 
@@ -1045,7 +1128,7 @@ export default function App({ preview = false }: { preview?: boolean }) {
                   <div className="notice">
                     <Settings2 size={16} />
                     填写服务访问令牌后即可提问。
-                    <button onClick={() => setDialog('settings')}>连接设置</button>
+                    <button onClick={openConnectionSettings}>连接设置</button>
                   </div>
                 )}
               {storageNotice && (
@@ -1465,16 +1548,37 @@ export default function App({ preview = false }: { preview?: boolean }) {
                     本地认证自动完成，无需生成或填写服务访问令牌。模型密钥保留在服务端。
                   </p>
                 ) : (
-                  <label className="token-label">
-                    服务访问令牌 {status?.authRequired && <span>此服务需要令牌</span>}
-                    <input
-                      type="password"
-                      value={token}
-                      placeholder="由服务维护者提供；仅保存在本次会话"
-                      onChange={(e) => setToken(e.target.value)}
-                      autoComplete="off"
-                    />
-                  </label>
+                  <>
+                    <label className="token-label">
+                      服务访问令牌 {status?.authRequired && <span>此服务需要令牌</span>}
+                      <input
+                        type="password"
+                        value={connectionSettings.token}
+                        placeholder="由服务维护者提供"
+                        onChange={(e) =>
+                          setConnectionDraft({ ...connectionSettings, token: e.target.value })
+                        }
+                        autoComplete="off"
+                        disabled={statusLoading}
+                      />
+                    </label>
+                    {tokenStorageKey && (
+                      <label className="token-remember">
+                        <input
+                          type="checkbox"
+                          checked={connectionSettings.remember}
+                          onChange={(e) =>
+                            setConnectionDraft({
+                              ...connectionSettings,
+                              remember: e.target.checked,
+                            })
+                          }
+                          disabled={statusLoading}
+                        />
+                        在此浏览器记住令牌
+                      </label>
+                    )}
+                  </>
                 )}
                 <p className="modal-note">
                   所选数据发送至当前分析服务；模型端点可能接收统计信息与查询结果。
@@ -1482,19 +1586,19 @@ export default function App({ preview = false }: { preview?: boolean }) {
                 <button
                   className="button secondary full-width"
                   disabled={statusLoading}
-                  onClick={() => void refreshStatus(token)}
+                  onClick={() => void refreshStatus(connectionSettings.token)}
                 >
                   {statusLoading ? '正在检查连接…' : '重新检查连接'}
                 </button>
                 <button
                   className="button primary full-width"
-                  disabled={statusLoading}
-                  onClick={async () => {
-                    if (await refreshStatus(token)) {
-                      setDialog(null);
-                      setToast('连接检查通过');
-                    }
-                  }}
+                  disabled={
+                    statusLoading ||
+                    (!!status?.authRequired &&
+                      !automaticConnection &&
+                      !connectionSettings.token.trim())
+                  }
+                  onClick={applyConnectionSettings}
                 >
                   {automaticConnection ? '完成' : '应用设置'}
                 </button>

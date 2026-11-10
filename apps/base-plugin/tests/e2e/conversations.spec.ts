@@ -2,10 +2,11 @@ import { test, expect, type Page, type FrameLocator } from '@playwright/test';
 import type { AnalysisJob } from '../../shared/types';
 
 // Only synthetic table data and a fake analysis service are used here.
-async function fixture(page: Page, background = false) {
+async function fixture(page: Page, background = false, serviceToken = '') {
   const jobs = new Map<string, { key: string; question: string; table: string }>();
   let complete = !background;
   let submissions = 0;
+  const status = { ready: true, model: 'fixture', authRequired: !!serviceToken };
   await page.route('**/conversation-host**', (route) => {
     const params = new URL(route.request().url()).search;
     return route.fulfill({
@@ -50,8 +51,12 @@ async function fixture(page: Page, background = false) {
     `,
     }),
   );
-  await page.route('**/api/status', (route) =>
-    route.fulfill({ json: { ready: true, model: 'fixture', authRequired: false } }),
+  await page.route('**/api/status', (route) => route.fulfill({ json: status }));
+  const authorized = (header?: string) => !serviceToken || header === `Bearer ${serviceToken}`;
+  await page.route('**/api/connection', (route) =>
+    authorized(route.request().headers().authorization)
+      ? route.fulfill({ json: status })
+      : route.fulfill({ status: 401, json: { error: '令牌错误' } }),
   );
   const response = (id: string): AnalysisJob => {
     const job = jobs.get(id)!;
@@ -74,6 +79,9 @@ async function fixture(page: Page, background = false) {
       : { id, status: 'running' };
   };
   await page.route('**/api/analysis-jobs', (route) => {
+    if (!authorized(route.request().headers().authorization)) {
+      return route.fulfill({ status: 401, json: { error: '令牌错误' } });
+    }
     submissions++;
     const { id, key, payload } = route.request().postDataJSON();
     jobs.set(id, { key, question: payload.question, table: payload.snapshot.tableName });
@@ -106,6 +114,55 @@ async function analyze(frame: FrameLocator, question: string) {
   await frame.getByRole('button', { name: '开始分析', exact: true }).click();
   await expect(frame.getByRole('region', { name: '分析结果' })).toBeVisible();
 }
+
+test('正式插件仅保存验证通过的令牌，同一账号换表可用，并可取消保存', async ({ page, context }) => {
+  const token = 'test-browser-token';
+  await fixture(page, false, token);
+  await page.goto('/conversation-host');
+  const frame = plugin(page);
+  const prompt = frame.getByText('填写服务访问令牌后即可提问。');
+  const dialog = frame.getByRole('dialog', { name: '连接设置' });
+  const openSettings = () =>
+    frame.getByRole('button', { name: '连接设置', exact: true }).first().click();
+  await expect(prompt).toBeVisible();
+  await openSettings();
+  const input = dialog.getByLabel(/服务访问令牌/);
+  const remember = dialog.getByRole('checkbox', { name: '在此浏览器记住令牌' });
+  const apply = dialog.getByRole('button', { name: '应用设置' });
+  await expect(remember).not.toBeChecked();
+  await input.fill('wrong-token');
+  await remember.check();
+  await apply.click();
+  await expect(dialog.getByText('令牌错误')).toBeVisible();
+  await page.reload();
+  await expect(prompt).toBeVisible();
+  await openSettings();
+  await expect(input).toBeEmpty();
+  await input.fill(token);
+  await remember.check();
+  await apply.click();
+  await expect(dialog).toHaveCount(0);
+
+  const another = await context.newPage();
+  await fixture(another, false, token);
+  await another.goto('/conversation-host?base=base-b');
+  await expect(plugin(another).locator('.context-bar')).toContainText('订单');
+  await analyze(plugin(another), '统计另一张表');
+  await another.goto('/conversation-host?base=base-b&user=user-b');
+  await expect(plugin(another).getByText('填写服务访问令牌后即可提问。')).toBeVisible();
+  await another.close();
+
+  await page.reload();
+  await expect(frame.locator('.context-bar')).toContainText('订单');
+  await openSettings();
+  await expect(remember).toBeChecked();
+  await remember.uncheck();
+  await apply.click();
+  await expect(dialog).toHaveCount(0);
+  await analyze(frame, '继续本次分析');
+  await page.reload();
+  await expect(prompt).toBeVisible();
+});
 
 test('切换表格、刷新和重开窗口后恢复草稿、结果及字段，用户和 Base 之间隔离', async ({
   page,

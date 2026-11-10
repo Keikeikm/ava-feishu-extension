@@ -37,7 +37,10 @@ export function createApp(
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.vary('Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-AVA-Job-Key');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Authorization, Content-Type, X-AVA-Job-Key, ngrok-skip-browser-warning',
+      );
       if (req.method === 'OPTIONS') {
         res.sendStatus(204);
         return;

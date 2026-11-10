@@ -20,7 +20,7 @@ export async function connectFeishu() {
     userId && selection.baseId
       ? { userId, baseId: selection.baseId, viewId: selection.viewId ?? 'default' }
       : null;
-  return { tables, tableId: selection.tableId ?? tables[0]?.id, scope };
+  return { tables, tableId: selection.tableId ?? tables[0]?.id, scope, userId };
 }
 
 export async function listViews(tableId: string) {

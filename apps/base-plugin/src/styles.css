@@ -1325,6 +1325,14 @@ td {
   font-size: 10px;
   color: #b1b5c2;
 }
+.token-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: #70798e;
+  font-size: 12px;
+}
 .modal .primary {
   margin-top: 15px;
 }

@@ -81,17 +81,26 @@ test('真实 SSE 首段提前显示，刷新恢复进度，最终展示双轴图
       route.fulfill({ json: { ready: true, authRequired: false, model: 'fixture' } }),
     );
     await page.goto('/');
-    await page.getByRole('textbox', { name: '分析问题' }).fill('分析收入与毛利率');
-    await page.getByRole('button', { name: '开始分析', exact: true }).click();
+    const input = page.getByRole('textbox', { name: '分析问题' });
+    const send = page.getByRole('button', { name: '开始分析', exact: true });
+    await input.fill('分析收入与毛利率');
+    await send.click();
+    await expect(page.locator('.user-question')).toHaveText('分析收入与毛利率');
+    await expect(input).toHaveValue('');
+    await expect(input).toBeEnabled();
     await expect(page.locator('.conversation-answer')).toContainText('收入增加，但毛利率下降。');
-    await expect(page.getByRole('button', { name: '开始分析', exact: true })).toBeDisabled();
+    await input.fill('按地区比较收入');
+    await expect(send).toBeDisabled();
+    await input.press('Enter');
     expect(calls).toBe(1);
     await page.reload();
     await expect(page.locator('.conversation-answer')).toHaveText('收入增加，但毛利率下降。');
     await expect(page.getByText('实时更新', { exact: true })).toBeVisible();
+    await expect(input).toHaveValue('按地区比较收入');
     release();
-    await expect(page.getByRole('textbox', { name: '分析问题' })).toBeEnabled();
     await expect(page.locator('.conversation-answer')).toContainText('建议进一步核对成本与折扣。');
+    await expect(input).toHaveValue('按地区比较收入');
+    await expect(send).toBeEnabled();
     await expect(page.locator('.antv-chart[data-state="ready"] canvas')).toBeVisible({
       timeout: 30_000,
     });
@@ -118,5 +127,35 @@ test('真实 SSE 首段提前显示，刷新恢复进度，最终展示双轴图
     release();
     server.closeAllConnections();
     server.close();
+  }
+});
+
+test('发送失败时保留下一条草稿，输入框为空时恢复未发送的问题', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let attempts = 0;
+  await page.route('**/api/analysis-jobs', async (route) => {
+    const attempt = ++attempts;
+    await gate;
+    await route.fulfill({ status: 400, json: { error: `发送失败 ${attempt}` } });
+  });
+  try {
+    await page.goto('/');
+    const input = page.getByRole('textbox', { name: '分析问题' });
+    const send = page.getByRole('button', { name: '开始分析', exact: true });
+    await input.fill('分析总收入');
+    await send.click();
+    await expect(input).toHaveValue('');
+    await input.fill('按月份比较收入');
+    release();
+    await expect(page.getByRole('alert')).toHaveText('发送失败 1');
+    await expect(input).toHaveValue('按月份比较收入');
+    await send.click();
+    await expect(page.getByRole('alert')).toHaveText('发送失败 2');
+    await expect(input).toHaveValue('按月份比较收入');
+  } finally {
+    release();
   }
 });
