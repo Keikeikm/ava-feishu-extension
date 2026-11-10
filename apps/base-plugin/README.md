@@ -36,7 +36,11 @@ _界面示例使用测试数据。_
 
 ## 从普通表格链接添加
 
-发布后的视图由飞书托管。分析 API 可以留在 Mac 上，通过固定 HTTPS 隧道提供服务，也可以部署到服务器。
+发布后，飞书托管视图页面，页面通过 HTTPS 调用分析 API。如果 API 仍在你的 Mac 上运行，ngrok 可以提供一个固定的公网 HTTPS 地址，把请求转发到本机端口。
+
+**飞书视图** → **ngrok 公网 HTTPS 地址** → **Mac 上的分析 API**
+
+已有可访问的 HTTPS 分析 API 时，直接使用该地址并跳过第 2 步。仅用 `debugPort` 本地调试时，也可以跳过本节。
 
 1. **启动分析 API。** 在 `apps/base-plugin/.env` 设置 `PLUGIN_ACCESS_TOKEN`，可用 `openssl rand -hex 32` 生成。在 `PLUGIN_ALLOWED_ORIGINS` 填写插件页面的实际来源，例如 `https://blk_YourTableViewId.feishupkg.com`。本机运行时使用 `HOST=127.0.0.1`。
 
@@ -45,18 +49,26 @@ _界面示例使用测试数据。_
    npm start -w @ava/base-plugin
    ```
 
-   使用 ngrok 时，将固定 HTTPS 地址转发到 API 的实际端口，例如 `ngrok http http://127.0.0.1:3001 --inspect=false`。使用插件时保持 API 和隧道运行。 [ngrok 固定域名说明](https://ngrok.com/docs/gateway/domains)
+2. **为本机 API 启动 ngrok 隧道。** 首次使用时，安装 ngrok 并配置 ngrok 账号的 Authtoken。 [ngrok 安装与配置](https://ngrok.com/docs/start)
 
-2. **绑定 HTTPS 地址并上传视图包。** 将示例地址换成分析 API 的 HTTPS 地址，只填协议和主机名。把同一地址填入飞书后台的「服务器域名白名单」。
+   另开一个终端运行下方命令。`3001` 是默认 API 端口，以第 1 步的启动日志为准。
+
+   ```sh
+   ngrok http http://127.0.0.1:3001 --inspect=false
+   ```
+
+   复制 ngrok 终端 `Forwarding` 一栏里的 HTTPS 地址，下一步会用到。使用插件时，保持分析 API 和 ngrok 隧道都在运行。 [ngrok 固定域名说明](https://ngrok.com/docs/gateway/domains)
+
+3. **绑定 HTTPS 地址并上传视图包。** 将命令里的示例换成上一步拿到的地址，或已有的 HTTPS 分析 API 地址，只填协议和主机名。把同一地址填入飞书后台的「服务器域名白名单」。
 
    ```sh
    npm run plugin:configure -w @ava/base-plugin -- --api-origin https://ava.example.com
    npm run plugin:upload -w @ava/base-plugin
    ```
 
-3. **发布并添加视图。** 在「多维表格数据表视图」选择上传的组件版本并保存，再到「版本管理与发布」提交应用版本。仅自己使用时，可用范围只选本人。发布后用普通链接打开可编辑的表格，通过「+ → 添加更多插件」添加 AVA。 [飞书数据表视图发布指南](https://open.feishu.cn/document/base-extensions/base-table-view-extension-development-guide)
+4. **发布并添加视图。** 在「多维表格数据表视图」选择上传的组件版本并保存，再到「版本管理与发布」提交应用版本。仅自己使用时，可用范围只选本人。发布后用普通链接打开可编辑的表格，通过「+ → 添加更多插件」添加 AVA。 [飞书数据表视图发布指南](https://open.feishu.cn/document/base-extensions/base-table-view-extension-development-guide)
 
-4. **连接一次。** 在「连接设置」输入服务访问令牌，勾选「在此浏览器记住令牌」，再应用设置。此后同一浏览器、同一飞书账号可在其他表格自动连接。取消勾选并应用设置可清除保存的令牌。
+5. **连接一次。** 在「连接设置」输入服务访问令牌，勾选「在此浏览器记住令牌」，再应用设置。此后同一浏览器、同一飞书账号可在其他表格自动连接。取消勾选并应用设置可清除保存的令牌。
 
 如果菜单没有 AVA，检查已发布的应用版本是否包含**数据表视图**能力，以及当前账号是否在可用范围内。若视图能打开但连不上分析服务，检查 HTTPS 地址、飞书的服务器域名白名单及 API 的 `PLUGIN_ALLOWED_ORIGINS`。
 
